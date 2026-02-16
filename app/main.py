@@ -13,7 +13,16 @@ from app.embeddings import EmbeddingProvider
 from app.models import Base
 from app.parser import RAGAnythingParser
 from app.repository import RagRepository
-from app.schemas import IngestRequest, IngestResponse, QueryRequest, QueryResponse, RetrieveRequest, RetrieveResponse
+from app.schemas import (
+    IngestRequest,
+    IngestResponse,
+    QueryRequest,
+    QueryResponse,
+    RetrieveRequest,
+    RetrieveResponse,
+    SourcesRequest,
+    SourcesResponse,
+)
 from app.service import RagService
 
 
@@ -82,7 +91,14 @@ def ingest(payload: IngestRequest, service: RagService = Depends(get_service)) -
 def retrieve(payload: RetrieveRequest, service: RagService = Depends(get_service)) -> RetrieveResponse:
     if len(payload.query) > settings.max_query_chars:
         raise HTTPException(status_code=413, detail="Query too large")
-    hits = service.retrieve(payload.query, payload.top_k, payload.min_score, payload.collection, payload.return_text)
+    hits = service.retrieve(
+        payload.query,
+        payload.top_k,
+        payload.min_score,
+        payload.collection,
+        payload.source_uris,
+        payload.return_text,
+    )
     return RetrieveResponse(hits=hits)
 
 
@@ -90,4 +106,9 @@ def retrieve(payload: RetrieveRequest, service: RagService = Depends(get_service
 def query(payload: QueryRequest, service: RagService = Depends(get_service)) -> QueryResponse:
     if len(payload.query) > settings.max_query_chars:
         raise HTTPException(status_code=413, detail="Query too large")
-    return service.query(payload.query, payload.top_k, payload.min_score, payload.collection)
+    return service.query(payload.query, payload.top_k, payload.min_score, payload.collection, payload.source_uris)
+
+
+@app.post("/sources", response_model=SourcesResponse, dependencies=[Depends(require_api_key)])
+def sources(payload: SourcesRequest, service: RagService = Depends(get_service)) -> SourcesResponse:
+    return SourcesResponse(sources=service.list_sources(payload.collection))

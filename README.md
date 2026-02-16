@@ -6,6 +6,7 @@ Production-oriented RAG microservice for WordPress integrations. The service ing
 - `POST /ingest` for batch indexing from a directory.
 - `POST /retrieve` for fragment-level semantic retrieval.
 - `POST /query` for grounded answer generation with source list.
+- `POST /sources` for listing available source files in a collection (for WordPress source picker).
 - Stable `fragment_id = sha256(source_uri + element_index + normalized_content_prefix)`.
 - Fragment-level indexing with subchunking (`chunk_size=1500`, overlap `180` ≈ 12%).
 - X-API-Key authentication, JSON-only errors, query size limits, JSON logs.
@@ -42,6 +43,7 @@ Create `.env`:
 DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/rag
 EMBED_DIM=384
 EMBED_MODEL=all-MiniLM-L6-v2
+FAIL_ON_EMBEDDING_FALLBACK=true
 API_KEY=super-secret-key
 STORAGE_RAW=storage/raw
 REDIS_URL=
@@ -88,7 +90,7 @@ curl -X POST http://localhost:8000/ingest \
 curl -X POST http://localhost:8000/retrieve \
   -H "Content-Type: application/json" \
   -H "X-API-Key: super-secret-key" \
-  -d '{"query":"elasticity of demand","top_k":12,"min_score":0.2,"collection":"default"}'
+  -d '{"query":"тема урока: стили речи","top_k":8,"min_score":0.45,"collection":"default","source_uris":["1741176546_rodnoj-jazyk_-9-klass_-voiteleva-t_-m_-2022.pdf"]}'
 ```
 
 ### Query
@@ -97,12 +99,22 @@ curl -X POST http://localhost:8000/retrieve \
 curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
   -H "X-API-Key: super-secret-key" \
-  -d '{"query":"What is inflation?","top_k":10,"mode":"grounded","citation_style":"fragments","return_sources":true}'
+  -d '{"query":"тема урока: стили речи","top_k":8,"min_score":0.45,"mode":"grounded","citation_style":"fragments","return_sources":true,"collection":"default","source_uris":["1741176546_rodnoj-jazyk_-9-klass_-voiteleva-t_-m_-2022.pdf"]}'
+```
+
+### Sources (for source picker)
+
+```bash
+curl -X POST http://localhost:8000/sources \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: super-secret-key" \
+  -d '{"collection":"default"}'
 ```
 
 ## Notes
 - The parser uses RAG-Anything when available in runtime; if unavailable it degrades to lightweight local parsers for TXT/MD/PDF/DOCX.
 - `page` remains optional in all APIs.
+- In production keep `FAIL_ON_EMBEDDING_FALLBACK=true` to avoid silent hash-embedding fallback and low-quality retrieval.
 
 ## Troubleshooting dependencies
 - If your environment cannot resolve a pinned wheel for `pillow`, use the unpinned `pillow` entry from `requirements.txt` (already configured in this repo) so `pip` can pick a compatible build.

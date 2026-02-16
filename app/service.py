@@ -2,7 +2,7 @@ from pathlib import Path
 
 from app.parser import RAGAnythingParser
 from app.repository import RagRepository
-from app.schemas import CanonicalFragment, QueryResponse, Source
+from app.schemas import CanonicalFragment, QueryResponse, Source, SourceInfo
 from app.utils import snippet_from_text, stable_fragment_id
 
 SUPPORTED_EXTENSIONS = {".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".txt", ".md", ".png", ".jpg", ".jpeg"}
@@ -47,8 +47,16 @@ class RagService:
             "indexed_vectors": indexed_vectors,
         }
 
-    def retrieve(self, query: str, top_k: int, min_score: float, collection: str, return_text: bool) -> list[dict]:
-        rows = self.repository.retrieve(query, top_k, min_score, collection)
+    def retrieve(
+        self,
+        query: str,
+        top_k: int,
+        min_score: float,
+        collection: str,
+        source_uris: list[str] | None,
+        return_text: bool,
+    ) -> list[dict]:
+        rows = self.repository.retrieve(query, top_k, min_score, collection, source_uris)
         return [
             {
                 "fragment_id": r.fragment_id,
@@ -63,8 +71,15 @@ class RagService:
             for r in rows
         ]
 
-    def query(self, query: str, top_k: int, min_score: float, collection: str) -> QueryResponse:
-        hits = self.retrieve(query, top_k, min_score, collection, return_text=False)
+    def query(
+        self,
+        query: str,
+        top_k: int,
+        min_score: float,
+        collection: str,
+        source_uris: list[str] | None,
+    ) -> QueryResponse:
+        hits = self.retrieve(query, top_k, min_score, collection, source_uris, return_text=False)
         if not hits:
             return QueryResponse(answer="Недостаточно данных в источниках.", sources=[])
 
@@ -83,3 +98,7 @@ class RagService:
         bullets = "\n".join([f"[{s.n}] {s.snippet}" for s in sources[:3]])
         answer = f"Найденные подтверждённые фрагменты:\n{bullets}"
         return QueryResponse(answer=answer, sources=sources)
+
+    def list_sources(self, collection: str) -> list[SourceInfo]:
+        rows = self.repository.list_sources(collection)
+        return [SourceInfo(source_uri=row.source_uri, title=row.title) for row in rows]

@@ -22,6 +22,12 @@ class RetrievalRow:
     text: str
 
 
+@dataclass
+class SourceRow:
+    source_uri: str
+    title: str | None
+
+
 class RagRepository:
     def __init__(self, db: Session, embeddings: EmbeddingProvider) -> None:
         self.db = db
@@ -73,9 +79,19 @@ class RagRepository:
             count += 1
         return count
 
-    def retrieve(self, query: str, top_k: int, min_score: float, collection: str) -> list[RetrievalRow]:
+    def retrieve(
+        self,
+        query: str,
+        top_k: int,
+        min_score: float,
+        collection: str,
+        source_uris: list[str] | None,
+    ) -> list[RetrievalRow]:
         qvec = self.embeddings.embed(query)
-        docs = self.db.scalars(select(Document.doc_id).where(Document.collection == collection)).all()
+        docs_stmt = select(Document.doc_id).where(Document.collection == collection)
+        if source_uris:
+            docs_stmt = docs_stmt.where(Document.source_uri.in_(source_uris))
+        docs = self.db.scalars(docs_stmt).all()
         if not docs:
             return []
 
@@ -103,3 +119,9 @@ class RagRepository:
                 text=emb.text,
             )
         return sorted(best_by_fragment.values(), key=lambda r: r.score, reverse=True)[:top_k]
+
+    def list_sources(self, collection: str) -> list[SourceRow]:
+        rows = self.db.scalars(
+            select(Document).where(Document.collection == collection).order_by(Document.source_uri.asc())
+        ).all()
+        return [SourceRow(source_uri=row.source_uri, title=row.title) for row in rows]

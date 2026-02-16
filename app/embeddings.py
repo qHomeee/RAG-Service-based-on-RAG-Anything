@@ -1,19 +1,32 @@
 import hashlib
+import logging
 import random
 
 from app.config import settings
+
+
+logger = logging.getLogger("rag_service")
 
 
 class EmbeddingProvider:
     def __init__(self) -> None:
         self.dim = settings.embed_dim
         self._model = None
+        self.using_fallback = False
         try:
             from sentence_transformers import SentenceTransformer
 
             self._model = SentenceTransformer(settings.embed_model)
         except Exception:
             self._model = None
+            self.using_fallback = True
+            logger.warning("embedding_model_unavailable", extra={"embed_model": settings.embed_model})
+
+        if self.using_fallback and settings.fail_on_embedding_fallback:
+            raise RuntimeError(
+                "Embedding model failed to load. Install sentence-transformers model/dependencies "
+                "or set FAIL_ON_EMBEDDING_FALLBACK=false for non-production fallback mode."
+            )
 
     def embed(self, text: str) -> list[float]:
         if self._model is not None:

@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/rag"
     embed_dim: int = 384
     embed_model: str = "all-MiniLM-L6-v2"
+    fail_on_embedding_fallback: bool = True
     api_key: str = "change-me"
     storage_raw: str = "storage/raw"
     redis_url: str | None = None
