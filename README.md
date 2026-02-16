@@ -57,6 +57,20 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+## Run parser only (without API)
+
+Use the standalone script:
+
+```bash
+python scripts/run_parser.py --input storage/raw --json
+```
+
+Single file example:
+
+```bash
+python scripts/run_parser.py --input storage/raw/your_file.pdf --preview-limit 10 --json
+```
+
 ## API examples
 
 ### Ingest
