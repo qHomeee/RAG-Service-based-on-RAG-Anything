@@ -13,6 +13,7 @@ from app.embeddings import EmbeddingProvider
 from app.models import Base
 from app.parser import RAGAnythingParser
 from app.repository import RagRepository
+from app.reranker import CrossEncoderReranker
 from app.schemas import (
     IngestRequest,
     IngestResponse,
@@ -53,7 +54,10 @@ def require_api_key(x_api_key: str = Header(default="")) -> None:
 
 
 def get_service(db: Session = Depends(get_db)) -> RagService:
-    return RagService(parser=RAGAnythingParser(), repository=RagRepository(db=db, embeddings=EmbeddingProvider()))
+    return RagService(
+        parser=RAGAnythingParser(),
+        repository=RagRepository(db=db, embeddings=EmbeddingProvider(), reranker=CrossEncoderReranker()),
+    )
 
 
 app = FastAPI(title=settings.app_name)

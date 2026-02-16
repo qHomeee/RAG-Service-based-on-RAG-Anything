@@ -8,7 +8,11 @@ Production-oriented RAG microservice for WordPress integrations. The service ing
 - `POST /query` for grounded answer generation with source list.
 - `POST /sources` for listing available source files in a collection (for WordPress source picker).
 - Stable `fragment_id = sha256(source_uri + element_index + normalized_content_prefix)`.
+- Structure-aware fragmenting (headings/paragraphs) with adaptive 800-1200 char chunks and `heading_path` in fragment metadata.
+- Hybrid retrieval pipeline: vector recall top-N + BM25 signal + cross-encoder reranking to final top-k.
 - Fragment-level indexing with subchunking (`chunk_size=1500`, overlap `180` ≈ 12%).
+- Parser observability logs with parse mode and fallback-ratio alerts.
+- Quality monitoring CLI for Recall@k / nDCG regression checks across reference query sets.
 - X-API-Key authentication, JSON-only errors, query size limits, JSON logs.
 
 ## Project tree
@@ -72,6 +76,28 @@ Single file example:
 ```bash
 python scripts/run_parser.py --input storage/raw/your_file.pdf --preview-limit 10 --json
 ```
+
+## Quality monitoring pipeline
+
+Prepare a JSON evaluation set (usually 50-100 labeled queries):
+
+```json
+[
+  {
+    "query": "что такое инфляция",
+    "relevant_fragment_ids": ["abc123", "def456"],
+    "graded_relevance": {"abc123": 2, "def456": 1}
+  }
+]
+```
+
+Run evaluation after reindex/model changes:
+
+```bash
+python scripts/run_quality_eval.py --eval-set eval_set.json --collection default --top-k 10
+```
+
+The report includes per-query and mean `Recall@k` / `nDCG@k` for regression monitoring.
 
 ## API examples
 

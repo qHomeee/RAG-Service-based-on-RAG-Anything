@@ -19,6 +19,15 @@ class Settings(BaseSettings):
     default_min_score: float = 0.2
     chunk_size: int = 1500
     chunk_overlap: int = 180
+    adaptive_chunk_min_chars: int = 800
+    adaptive_chunk_max_chars: int = 1200
+
+    vector_recall_top_n: int = 50
+    rerank_top_n: int = 10
+    hybrid_vector_weight: float = 0.7
+
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    parser_fallback_alert_threshold: float = 0.3
 
 
 settings = Settings()

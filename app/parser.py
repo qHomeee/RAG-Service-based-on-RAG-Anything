@@ -14,10 +14,14 @@ class RAGAnythingParser:
     """
 
     def parse_file(self, source_uri: str, path: Path) -> list[ParsedElement]:
+        elements, _ = self.parse_file_with_mode(source_uri, path)
+        return elements
+
+    def parse_file_with_mode(self, source_uri: str, path: Path) -> tuple[list[ParsedElement], str]:
         rag_elements = self._parse_with_rag_anything(path)
         if rag_elements:
-            return self._normalize_elements(rag_elements)
-        return self._fallback_parse(path)
+            return self._normalize_elements(rag_elements), "rag_anything"
+        return self._fallback_parse(path), "fallback"
 
     def _parse_with_rag_anything(self, path: Path) -> list[dict] | None:
         try:
