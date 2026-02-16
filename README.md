@@ -89,3 +89,8 @@ curl -X POST http://localhost:8000/query \
 ## Notes
 - The parser uses RAG-Anything when available in runtime; if unavailable it degrades to lightweight local parsers for TXT/MD/PDF/DOCX.
 - `page` remains optional in all APIs.
+
+## Troubleshooting dependencies
+- If your environment cannot resolve a pinned wheel for `pillow`, use the unpinned `pillow` entry from `requirements.txt` (already configured in this repo) so `pip` can pick a compatible build.
+- For minimal text/PDF/docx ingestion, image-specific packages can be treated as optional if your deployment does not process image OCR/caption pipelines.
+
