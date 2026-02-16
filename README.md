@@ -92,5 +92,9 @@ curl -X POST http://localhost:8000/query \
 
 ## Troubleshooting dependencies
 - If your environment cannot resolve a pinned wheel for `pillow`, use the unpinned `pillow` entry from `requirements.txt` (already configured in this repo) so `pip` can pick a compatible build.
+- `RAG-Anything` pulls `mineru[core]`, which requires `pypdf>=5.6.0`; therefore this repo uses `pypdf>=5.6.0,<6` to avoid resolver conflicts.
+- If installation is still slow because of resolver backtracking, install core deps first and then install RAG-Anything last:
+  1. `pip install -r requirements.txt --no-deps`
+  2. `pip install "pypdf>=5.6.0,<6"`
+  3. `pip install git+https://github.com/HKUDS/RAG-Anything.git`
 - For minimal text/PDF/docx ingestion, image-specific packages can be treated as optional if your deployment does not process image OCR/caption pipelines.
-
