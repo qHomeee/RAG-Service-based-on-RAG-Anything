@@ -3,7 +3,7 @@
 Production-oriented RAG microservice for WordPress integrations. The service ingests raw files, parses with **HKUDS/RAG-Anything** adapter, normalizes to stable fragments, stores vectors in PostgreSQL+pgvector, and returns grounded responses with citations on `source_uri + fragment_id`.
 
 ## Features
-- `POST /ingest` for batch indexing from a directory.
+- Manual parser запуск через `scripts/run_parser.py --ingest` для загрузки данных в БД.
 - `POST /retrieve` for fragment-level semantic retrieval.
 - `POST /query` for grounded answer generation with source list.
 - Stable `fragment_id = sha256(source_uri + element_index + normalized_content_prefix)`.
@@ -57,12 +57,18 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-## Run parser only (without API)
+## Run parser manually
 
 Use the standalone script:
 
 ```bash
 python scripts/run_parser.py --input storage/raw --json
+```
+
+To persist parsed data into PostgreSQL + pgvector:
+
+```bash
+python scripts/run_parser.py --input storage/raw --ingest --collection default
 ```
 
 Single file example:
@@ -73,14 +79,14 @@ python scripts/run_parser.py --input storage/raw/your_file.pdf --preview-limit 1
 
 ## API examples
 
-### Ingest
+### Ingest (disabled in API)
 
 ```bash
 curl -X POST http://localhost:8000/ingest \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: super-secret-key" \
-  -d '{"input_path":"storage/raw","collection":"default","reindex":false}'
+  -H "X-API-Key: super-secret-key"
 ```
+
+This endpoint intentionally returns `410 Gone` with instructions to run parser ingestion manually.
 
 ### Retrieve
 

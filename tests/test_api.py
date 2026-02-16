@@ -4,9 +4,6 @@ from app.main import app, get_service
 
 
 class FakeService:
-    def ingest(self, input_path: str, collection: str, reindex: bool):
-        return {"indexed_docs": 1, "indexed_fragments": 2, "indexed_vectors": 3}
-
     def retrieve(self, query: str, top_k: int, min_score: float, collection: str, return_text: bool):
         return [
             {
@@ -37,12 +34,10 @@ def test_ingest_endpoint():
     response = client.post(
         "/ingest",
         headers={"X-API-Key": "change-me"},
-        json={"input_path": "storage/raw", "collection": "default", "reindex": False},
     )
-    assert response.status_code == 200
+    assert response.status_code == 410
     body = response.json()
-    assert body["indexed_docs"] == 1
-    assert body["indexed_fragments"] == 2
+    assert "Ingest через API отключен" in body["error"]
 
 
 def test_retrieve_endpoint():

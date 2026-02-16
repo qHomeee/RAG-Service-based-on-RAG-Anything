@@ -13,7 +13,7 @@ from app.embeddings import EmbeddingProvider
 from app.models import Base
 from app.parser import RAGAnythingParser
 from app.repository import RagRepository
-from app.schemas import IngestRequest, IngestResponse, QueryRequest, QueryResponse, RetrieveRequest, RetrieveResponse
+from app.schemas import QueryRequest, QueryResponse, RetrieveRequest, RetrieveResponse
 from app.service import RagService
 
 
@@ -72,10 +72,14 @@ async def generic_exc_handler(_: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
 
-@app.post("/ingest", response_model=IngestResponse, dependencies=[Depends(require_api_key)])
-def ingest(payload: IngestRequest, service: RagService = Depends(get_service)) -> IngestResponse:
-    stats = service.ingest(payload.input_path, payload.collection, payload.reindex)
-    return IngestResponse(**stats)
+@app.post("/ingest", dependencies=[Depends(require_api_key)])
+def ingest() -> JSONResponse:
+    return JSONResponse(
+        status_code=410,
+        content={
+            "error": "Ingest через API отключен. Используйте ручной запуск: python scripts/run_parser.py --input <path> --ingest"
+        },
+    )
 
 
 @app.post("/retrieve", response_model=RetrieveResponse, dependencies=[Depends(require_api_key)])
