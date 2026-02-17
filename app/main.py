@@ -56,10 +56,17 @@ def require_api_key(x_api_key: str = Header(default="")) -> None:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
-def get_service(db: Session = Depends(get_db)) -> RagService:
+app = FastAPI(title=settings.app_name)
+
+
+def get_service(request: Request, db: Session = Depends(get_db)) -> RagService:
     return RagService(
-        parser=RAGAnythingParser(),
-        repository=RagRepository(db=db, embeddings=EmbeddingProvider(), reranker=CrossEncoderReranker()),
+        parser=request.app.state.parser,
+        repository=RagRepository(
+            db=db,
+            embeddings=request.app.state.embeddings,
+            reranker=request.app.state.reranker,
+        ),
     )
 
 
@@ -82,13 +89,13 @@ def _validate_ingest_path(input_path: str) -> None:
         raise HTTPException(status_code=400, detail=f"input_path must be under {allowed_root}") from exc
 
 
-app = FastAPI(title=settings.app_name)
-
-
 @app.on_event("startup")
 def on_startup() -> None:
     _validate_secure_settings()
     Base.metadata.create_all(bind=engine)
+    app.state.parser = RAGAnythingParser()
+    app.state.embeddings = EmbeddingProvider()
+    app.state.reranker = CrossEncoderReranker()
 
 
 @app.exception_handler(HTTPException)

@@ -55,6 +55,7 @@ REDIS_URL=
 APP_ENV=production
 INGEST_PATH_MUST_BE_UNDER_STORAGE_RAW=true
 RATE_LIMIT_PER_MINUTE=120
+UVICORN_WORKERS=2
 ```
 
 ## Run with Docker Postgres
@@ -64,7 +65,7 @@ docker compose up -d
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
 ```
 
 ## Run parser only (without API)
@@ -151,6 +152,7 @@ curl -X POST http://localhost:8000/sources \
 - In production, set a strong `API_KEY` and never keep the default `change-me`.
 - In production, `APP_ENV=production` enforces non-default API key at startup.
 - `INGEST_PATH_MUST_BE_UNDER_STORAGE_RAW=true` protects from indexing arbitrary directories.
+- Models are initialized once at startup and reused across requests for better parallel performance.
 - The parser uses RAG-Anything when available in runtime; if unavailable it degrades to lightweight local parsers for TXT/MD/PDF/DOCX.
 - `page` remains optional in all APIs.
 - In production keep `FAIL_ON_EMBEDDING_FALLBACK=true` to avoid silent hash-embedding fallback and low-quality retrieval.

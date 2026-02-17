@@ -37,6 +37,7 @@ class Settings(BaseSettings):
 
     ingest_path_must_be_under_storage_raw: bool = True
     rate_limit_per_minute: int = 120
+    uvicorn_workers: int = 2
 
 
 settings = Settings()

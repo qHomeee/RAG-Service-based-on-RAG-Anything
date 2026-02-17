@@ -1,6 +1,7 @@
 import hashlib
 import logging
 import random
+import threading
 
 from app.config import settings
 
@@ -12,6 +13,7 @@ class EmbeddingProvider:
     def __init__(self) -> None:
         self.dim = settings.embed_dim
         self._model = None
+        self._lock = threading.Lock()
         self.using_fallback = False
         try:
             from sentence_transformers import SentenceTransformer
@@ -30,7 +32,8 @@ class EmbeddingProvider:
 
     def embed(self, text: str) -> list[float]:
         if self._model is not None:
-            values = self._model.encode(text, normalize_embeddings=True).tolist()
+            with self._lock:
+                values = self._model.encode(text, normalize_embeddings=True).tolist()
             if len(values) != self.dim:
                 if len(values) > self.dim:
                     return values[: self.dim]

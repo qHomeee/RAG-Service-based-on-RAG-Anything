@@ -1,4 +1,5 @@
 import logging
+import threading
 
 from app.config import settings
 
@@ -8,6 +9,7 @@ logger = logging.getLogger("rag_service")
 class CrossEncoderReranker:
     def __init__(self) -> None:
         self._model = None
+        self._lock = threading.Lock()
         try:
             from sentence_transformers import CrossEncoder
 
@@ -26,5 +28,6 @@ class CrossEncoderReranker:
         if self._model is None:
             return [0.0 for _ in passages]
         pairs = [[query, p] for p in passages]
-        scores = self._model.predict(pairs)
+        with self._lock:
+            scores = self._model.predict(pairs)
         return [float(s) for s in scores]
