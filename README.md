@@ -52,6 +52,7 @@ EMBED_DIM=384
 EMBED_MODEL=all-MiniLM-L6-v2
 FAIL_ON_EMBEDDING_FALLBACK=true
 API_KEY=super-secret-key
+ADMIN_API_KEY=super-admin-secret-key
 STORAGE_RAW=storage/raw
 REDIS_URL=
 APP_ENV=production
@@ -128,19 +129,19 @@ The k6 script includes threshold checks for `p95`, `p99`, and error rate.
 ### Health
 
 ```bash
-curl http://localhost:8000/healthz
+curl http://localhost:8000/healthz -H "X-API-Key: super-secret-key"
 ```
 
 ### Readiness
 
 ```bash
-curl http://localhost:8000/readyz
+curl http://localhost:8000/readyz -H "X-API-Key: super-secret-key"
 ```
 
 ### SLO metrics
 
 ```bash
-curl http://localhost:8000/metrics
+curl http://localhost:8000/metrics -H "X-API-Key: super-secret-key"
 ```
 
 ### Ingest
@@ -148,7 +149,7 @@ curl http://localhost:8000/metrics
 ```bash
 curl -X POST http://localhost:8000/ingest \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: super-secret-key" \
+  -H "X-Admin-API-Key: super-admin-secret-key" \
   -d '{"input_path":"storage/raw","collection":"default","reindex":false}'
 ```
 
@@ -180,9 +181,11 @@ curl -X POST http://localhost:8000/sources \
 ```
 
 ## Notes
-- In production, set a strong `API_KEY` and never keep the default `change-me`.
-- In production, `APP_ENV=production` enforces non-default API key at startup.
+- In production, set strong `API_KEY` and `ADMIN_API_KEY`, never keep defaults (`change-me`, `change-me-admin`).
+- In production, `APP_ENV=production` enforces non-default API keys at startup.
 - `INGEST_PATH_MUST_BE_UNDER_STORAGE_RAW=true` protects from indexing arbitrary directories.
+- GET endpoints (`/healthz`, `/readyz`, `/metrics`) are protected by `X-API-Key`.
+- `POST /ingest` is admin-only and requires `X-Admin-API-Key`.
 - Models are initialized once at startup and reused across requests for better parallel performance.
 - Retrieval candidate recall uses pgvector ANN in SQL (`embedding <=> query_vector` + top-N) before hybrid BM25 and rerank to reduce Python CPU/RAM on large datasets.
 - The parser uses RAG-Anything when available in runtime; if unavailable it degrades to lightweight local parsers for TXT/MD/PDF/DOCX.

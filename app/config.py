@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     embed_model: str = "all-MiniLM-L6-v2"
     fail_on_embedding_fallback: bool = True
     api_key: str = "change-me"
+    admin_api_key: str = "change-me-admin"
     storage_raw: str = "storage/raw"
     redis_url: str | None = None
 

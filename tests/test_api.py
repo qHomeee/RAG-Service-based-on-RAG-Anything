@@ -55,7 +55,7 @@ def test_ingest_endpoint(tmp_path: Path):
     try:
         response = client.post(
             "/ingest",
-            headers={"X-API-Key": "change-me"},
+            headers={"X-Admin-API-Key": "change-me-admin"},
             json={"input_path": str(tmp_path), "collection": "default", "reindex": False},
         )
         assert response.status_code == 200
@@ -115,7 +115,7 @@ def test_sources_endpoint():
 
 def test_metrics_endpoint():
     client = _client()
-    response = client.get("/metrics")
+    response = client.get("/metrics", headers={"X-API-Key": "change-me"})
     app.dependency_overrides.clear()
     assert response.status_code == 200
     body = response.json()
@@ -125,9 +125,33 @@ def test_metrics_endpoint():
 
 def test_readyz_endpoint_shape():
     client = _client()
-    response = client.get("/readyz")
+    response = client.get("/readyz", headers={"X-API-Key": "change-me"})
     app.dependency_overrides.clear()
     assert response.status_code == 200
     body = response.json()
     assert "status" in body
     assert "checks" in body
+
+
+
+def test_get_requires_api_key():
+    client = _client()
+    response = client.get("/healthz")
+    app.dependency_overrides.clear()
+    assert response.status_code == 401
+
+
+def test_ingest_requires_admin_api_key(tmp_path: Path):
+    client = _client()
+    original_setting = settings.ingest_path_must_be_under_storage_raw
+    settings.ingest_path_must_be_under_storage_raw = False
+    try:
+        response = client.post(
+            "/ingest",
+            headers={"X-API-Key": "change-me"},
+            json={"input_path": str(tmp_path), "collection": "default", "reindex": False},
+        )
+        assert response.status_code == 401
+    finally:
+        settings.ingest_path_must_be_under_storage_raw = original_setting
+        app.dependency_overrides.clear()

@@ -58,9 +58,16 @@ def require_api_key(x_api_key: str = Header(default="")) -> None:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
+def require_admin_api_key(x_admin_api_key: str = Header(default="")) -> None:
+    if x_admin_api_key != settings.admin_api_key:
+        raise HTTPException(status_code=401, detail="Invalid admin API key")
+
+
 def _validate_secure_settings() -> None:
     if settings.app_env.lower() in {"prod", "production"} and settings.api_key == "change-me":
         raise RuntimeError("API_KEY must be changed in production")
+    if settings.app_env.lower() in {"prod", "production"} and settings.admin_api_key == "change-me-admin":
+        raise RuntimeError("ADMIN_API_KEY must be changed in production")
 
 
 def _validate_ingest_path(input_path: str) -> None:
@@ -127,13 +134,13 @@ async def generic_exc_handler(_: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
 
-@app.get("/healthz")
+@app.get("/healthz", dependencies=[Depends(require_api_key)])
 def healthz(db: Session = Depends(get_db)) -> dict[str, str]:
     db.execute(text("SELECT 1"))
     return {"status": "ok"}
 
 
-@app.get("/readyz")
+@app.get("/readyz", dependencies=[Depends(require_api_key)])
 def readyz(request: Request, db: Session = Depends(get_db)) -> dict:
     db_ok = True
     pgvector_ok = True
@@ -162,12 +169,12 @@ def readyz(request: Request, db: Session = Depends(get_db)) -> dict:
     }
 
 
-@app.get("/metrics")
+@app.get("/metrics", dependencies=[Depends(require_api_key)])
 def metrics() -> dict:
     return {"slo": slo_metrics.snapshot()}
 
 
-@app.post("/ingest", response_model=IngestResponse, dependencies=[Depends(require_api_key), Depends(require_rate_limit)])
+@app.post("/ingest", response_model=IngestResponse, dependencies=[Depends(require_admin_api_key), Depends(require_rate_limit)])
 def ingest(payload: IngestRequest, service: RagService = Depends(get_service)) -> IngestResponse:
     _validate_ingest_path(payload.input_path)
     stats = service.ingest(payload.input_path, payload.collection, payload.reindex)

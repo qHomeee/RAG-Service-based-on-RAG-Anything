@@ -49,7 +49,7 @@ def test_ingest_path_must_exist(tmp_path: Path):
         missing = tmp_path / "missing"
         response = client.post(
             "/ingest",
-            headers={"X-API-Key": "change-me"},
+            headers={"X-Admin-API-Key": "change-me-admin"},
             json={"input_path": str(missing), "collection": "default", "reindex": False},
         )
         assert response.status_code == 400
