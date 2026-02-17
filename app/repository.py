@@ -3,7 +3,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 
-from sqlalchemy import delete, select
+from sqlalchemy import bindparam, delete, select, text
 from sqlalchemy.orm import Session
 
 from app.chunking import split_to_subchunks
@@ -12,7 +12,6 @@ from app.embeddings import EmbeddingProvider
 from app.models import Document, Embedding, Fragment
 from app.reranker import CrossEncoderReranker
 from app.schemas import CanonicalFragment
-from app.utils import cosine_similarity
 
 
 @dataclass
@@ -96,41 +95,58 @@ class RagRepository:
         source_uris: list[str] | None,
     ) -> list[RetrievalRow]:
         qvec = self.embeddings.embed(query)
-        docs_stmt = select(Document.doc_id).where(Document.collection == collection)
-        if source_uris:
-            docs_stmt = docs_stmt.where(Document.source_uri.in_(source_uris))
-        docs = self.db.scalars(docs_stmt).all()
-        if not docs:
-            return []
-
-        emb_rows = self.db.scalars(
-            select(Embedding).join(Fragment, Embedding.fragment_id == Fragment.fragment_id).where(Fragment.doc_id.in_(docs))
-        ).all()
-
-        by_fragment: dict[str, RetrievalRow] = {}
-        for emb in emb_rows:
-            frag = emb.fragment
-            score = cosine_similarity(qvec, emb.embedding)
-            current = by_fragment.get(frag.fragment_id)
-            if current and current.score >= score:
-                continue
-            by_fragment[frag.fragment_id] = RetrievalRow(
-                fragment_id=frag.fragment_id,
-                source_uri=frag.source_uri,
-                title=frag.document.title,
-                type=frag.type,
-                page=frag.page,
-                snippet=frag.snippet,
-                score=score,
-                text=frag.text,
-            )
-
-        if not by_fragment:
-            return []
-
-        vector_ranked = sorted(by_fragment.values(), key=lambda r: r.score, reverse=True)
         recall_top_n = max(top_k, settings.vector_recall_top_n)
-        recall_candidates = vector_ranked[:recall_top_n]
+
+        source_clause = ""
+        params: dict = {
+            "qvec": _vector_literal(qvec),
+            "collection": collection,
+            "recall_top_n": recall_top_n,
+        }
+        if source_uris:
+            source_clause = " AND d.source_uri = ANY(:source_uris)"
+            params["source_uris"] = source_uris
+
+        sql = text(
+            f"""
+            SELECT
+                e.fragment_id,
+                f.source_uri,
+                d.title,
+                f.type,
+                f.page,
+                f.snippet,
+                f.text,
+                MIN(e.embedding <=> CAST(:qvec AS vector)) AS distance
+            FROM embeddings e
+            JOIN fragments f ON f.fragment_id = e.fragment_id
+            JOIN documents d ON d.doc_id = f.doc_id
+            WHERE d.collection = :collection{source_clause}
+            GROUP BY e.fragment_id, f.source_uri, d.title, f.type, f.page, f.snippet, f.text
+            ORDER BY distance ASC
+            LIMIT :recall_top_n
+            """
+        )
+        if source_uris:
+            sql = sql.bindparams(bindparam("source_uris", expanding=False))
+
+        rows = self.db.execute(sql, params).mappings().all()
+        if not rows:
+            return []
+
+        recall_candidates = [
+            RetrievalRow(
+                fragment_id=row["fragment_id"],
+                source_uri=row["source_uri"],
+                title=row["title"],
+                type=row["type"],
+                page=row["page"],
+                snippet=row["snippet"],
+                score=max(0.0, 1.0 - float(row["distance"])),
+                text=row["text"],
+            )
+            for row in rows
+        ]
 
         query_terms = _tokenize(query)
         if query_terms:
@@ -179,6 +195,10 @@ class RagRepository:
         ).all()
         return [SourceRow(source_uri=row.source_uri, title=row.title) for row in rows]
 
+
+
+def _vector_literal(values: list[float]) -> str:
+    return "[" + ",".join(str(float(v)) for v in values) + "]"
 
 def _tokenize(text: str) -> list[str]:
     return re.findall(r"[\w-]+", (text or "").lower())

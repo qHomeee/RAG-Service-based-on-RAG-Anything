@@ -13,8 +13,10 @@ Production-oriented RAG microservice for WordPress integrations. The service ing
 - Fragment-level indexing with subchunking (`chunk_size=1500`, overlap `180` ≈ 12%).
 - Parser observability logs with parse mode and fallback-ratio alerts.
 - Quality monitoring CLI for Recall@k / nDCG regression checks across reference query sets.
-- X-API-Key authentication, per-IP in-memory rate limiting, JSON-only errors, query size limits, JSON logs.
+- X-API-Key authentication, Redis-backed rate limiting (fallback in-memory), JSON-only errors, query size limits, JSON logs.
 - `/healthz` liveness endpoint with DB connectivity check.
+- `/readyz` readiness endpoint with model-load checks and pgvector extension verification.
+- `/metrics` endpoint with SLO metrics (p95/p99 latency, 5xx error rate).
 
 ## Project tree
 
@@ -104,12 +106,41 @@ python scripts/run_quality_eval.py --eval-set eval_set.json --collection default
 
 The report includes per-query and mean `Recall@k` / `nDCG@k` for regression monitoring.
 
+
+## Load testing
+
+Locust:
+
+```bash
+locust -f scripts/loadtest/locustfile.py --host http://localhost:8000
+```
+
+k6:
+
+```bash
+k6 run scripts/loadtest/k6_retrieve.js
+```
+
+The k6 script includes threshold checks for `p95`, `p99`, and error rate.
+
 ## API examples
 
 ### Health
 
 ```bash
 curl http://localhost:8000/healthz
+```
+
+### Readiness
+
+```bash
+curl http://localhost:8000/readyz
+```
+
+### SLO metrics
+
+```bash
+curl http://localhost:8000/metrics
 ```
 
 ### Ingest
@@ -153,6 +184,7 @@ curl -X POST http://localhost:8000/sources \
 - In production, `APP_ENV=production` enforces non-default API key at startup.
 - `INGEST_PATH_MUST_BE_UNDER_STORAGE_RAW=true` protects from indexing arbitrary directories.
 - Models are initialized once at startup and reused across requests for better parallel performance.
+- Retrieval candidate recall uses pgvector ANN in SQL (`embedding <=> query_vector` + top-N) before hybrid BM25 and rerank to reduce Python CPU/RAM on large datasets.
 - The parser uses RAG-Anything when available in runtime; if unavailable it degrades to lightweight local parsers for TXT/MD/PDF/DOCX.
 - `page` remains optional in all APIs.
 - In production keep `FAIL_ON_EMBEDDING_FALLBACK=true` to avoid silent hash-embedding fallback and low-quality retrieval.

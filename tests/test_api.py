@@ -111,3 +111,23 @@ def test_sources_endpoint():
     assert response.status_code == 200
     body = response.json()
     assert body["sources"][0]["source_uri"] == "textbooks/econ.pdf"
+
+
+def test_metrics_endpoint():
+    client = _client()
+    response = client.get("/metrics")
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    body = response.json()
+    assert "slo" in body
+    assert "p95_latency_ms" in body["slo"]
+
+
+def test_readyz_endpoint_shape():
+    client = _client()
+    response = client.get("/readyz")
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    body = response.json()
+    assert "status" in body
+    assert "checks" in body

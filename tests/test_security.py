@@ -4,7 +4,6 @@ from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.main import app, get_service
-from app.security import rate_limiter
 
 
 class FakeService:
@@ -19,6 +18,18 @@ class FakeService:
 
     def list_sources(self, collection: str):
         return []
+
+
+class DummyLimiter:
+    def __init__(self):
+        self._calls = 0
+
+    def check(self, key: str) -> None:
+        self._calls += 1
+        if self._calls > 1:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=429, detail="Rate limit exceeded")
 
 
 def override_get_service():
@@ -47,12 +58,10 @@ def test_ingest_path_must_exist(tmp_path: Path):
         app.dependency_overrides.clear()
 
 
-def test_rate_limit_exceeded():
+def test_rate_limit_exceeded(monkeypatch):
     client = _client()
-    original = settings.rate_limit_per_minute
-    settings.rate_limit_per_minute = 1
-    rate_limiter.limit_per_minute = 1
-    rate_limiter._events.clear()
+    limiter = DummyLimiter()
+    monkeypatch.setattr("app.security.rate_limiter", limiter)
 
     try:
         response1 = client.post(
@@ -69,7 +78,4 @@ def test_rate_limit_exceeded():
         )
         assert response2.status_code == 429
     finally:
-        settings.rate_limit_per_minute = original
-        rate_limiter.limit_per_minute = original
-        rate_limiter._events.clear()
         app.dependency_overrides.clear()

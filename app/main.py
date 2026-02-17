@@ -1,5 +1,6 @@
 import logging
-from contextlib import contextmanager
+import time
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -13,6 +14,7 @@ from app.config import settings
 from app.db import SessionLocal, engine
 from app.embeddings import EmbeddingProvider
 from app.models import Base
+from app.observability import slo_metrics
 from app.parser import RAGAnythingParser
 from app.repository import RagRepository
 from app.reranker import CrossEncoderReranker
@@ -56,20 +58,6 @@ def require_api_key(x_api_key: str = Header(default="")) -> None:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
-app = FastAPI(title=settings.app_name)
-
-
-def get_service(request: Request, db: Session = Depends(get_db)) -> RagService:
-    return RagService(
-        parser=request.app.state.parser,
-        repository=RagRepository(
-            db=db,
-            embeddings=request.app.state.embeddings,
-            reranker=request.app.state.reranker,
-        ),
-    )
-
-
 def _validate_secure_settings() -> None:
     if settings.app_env.lower() in {"prod", "production"} and settings.api_key == "change-me":
         raise RuntimeError("API_KEY must be changed in production")
@@ -89,13 +77,37 @@ def _validate_ingest_path(input_path: str) -> None:
         raise HTTPException(status_code=400, detail=f"input_path must be under {allowed_root}") from exc
 
 
-@app.on_event("startup")
-def on_startup() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     _validate_secure_settings()
     Base.metadata.create_all(bind=engine)
     app.state.parser = RAGAnythingParser()
     app.state.embeddings = EmbeddingProvider()
     app.state.reranker = CrossEncoderReranker()
+    yield
+
+
+app = FastAPI(title=settings.app_name, lifespan=lifespan)
+
+
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    latency_ms = (time.perf_counter() - start) * 1000
+    slo_metrics.record(latency_ms, response.status_code)
+    return response
+
+
+def get_service(request: Request, db: Session = Depends(get_db)) -> RagService:
+    return RagService(
+        parser=request.app.state.parser,
+        repository=RagRepository(
+            db=db,
+            embeddings=request.app.state.embeddings,
+            reranker=request.app.state.reranker,
+        ),
+    )
 
 
 @app.exception_handler(HTTPException)
@@ -119,6 +131,40 @@ async def generic_exc_handler(_: Request, exc: Exception) -> JSONResponse:
 def healthz(db: Session = Depends(get_db)) -> dict[str, str]:
     db.execute(text("SELECT 1"))
     return {"status": "ok"}
+
+
+@app.get("/readyz")
+def readyz(request: Request, db: Session = Depends(get_db)) -> dict:
+    db_ok = True
+    pgvector_ok = True
+    try:
+        db.execute(text("SELECT 1"))
+        ext = db.execute(text("SELECT 1 FROM pg_extension WHERE extname='vector' LIMIT 1")).scalar_one_or_none()
+        pgvector_ok = ext is not None
+    except Exception:
+        db_ok = False
+        pgvector_ok = False
+
+    parser_loaded = getattr(request.app.state, "parser", None) is not None
+    embeddings_loaded = getattr(request.app.state, "embeddings", None) is not None and not request.app.state.embeddings.using_fallback
+    reranker_loaded = getattr(request.app.state, "reranker", None) is not None and request.app.state.reranker.available
+
+    ready = all([db_ok, pgvector_ok, parser_loaded, embeddings_loaded, reranker_loaded])
+    return {
+        "status": "ok" if ready else "degraded",
+        "checks": {
+            "db": db_ok,
+            "pgvector": pgvector_ok,
+            "parser_loaded": parser_loaded,
+            "embeddings_loaded": embeddings_loaded,
+            "reranker_loaded": reranker_loaded,
+        },
+    }
+
+
+@app.get("/metrics")
+def metrics() -> dict:
+    return {"slo": slo_metrics.snapshot()}
 
 
 @app.post("/ingest", response_model=IngestResponse, dependencies=[Depends(require_api_key), Depends(require_rate_limit)])
