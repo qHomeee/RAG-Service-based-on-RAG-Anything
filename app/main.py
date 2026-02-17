@@ -1,9 +1,11 @@
 import logging
 from contextlib import contextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pythonjsonlogger import jsonlogger
+from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -24,6 +26,7 @@ from app.schemas import (
     SourcesRequest,
     SourcesResponse,
 )
+from app.security import require_rate_limit
 from app.service import RagService
 
 
@@ -60,11 +63,31 @@ def get_service(db: Session = Depends(get_db)) -> RagService:
     )
 
 
+def _validate_secure_settings() -> None:
+    if settings.app_env.lower() in {"prod", "production"} and settings.api_key == "change-me":
+        raise RuntimeError("API_KEY must be changed in production")
+
+
+def _validate_ingest_path(input_path: str) -> None:
+    path = Path(input_path).resolve()
+    if not path.exists() or not path.is_dir():
+        raise HTTPException(status_code=400, detail="input_path must be an existing directory")
+    if not settings.ingest_path_must_be_under_storage_raw:
+        return
+
+    allowed_root = Path(settings.storage_raw).resolve()
+    try:
+        path.relative_to(allowed_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"input_path must be under {allowed_root}") from exc
+
+
 app = FastAPI(title=settings.app_name)
 
 
 @app.on_event("startup")
 def on_startup() -> None:
+    _validate_secure_settings()
     Base.metadata.create_all(bind=engine)
 
 
@@ -85,13 +108,20 @@ async def generic_exc_handler(_: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
 
-@app.post("/ingest", response_model=IngestResponse, dependencies=[Depends(require_api_key)])
+@app.get("/healthz")
+def healthz(db: Session = Depends(get_db)) -> dict[str, str]:
+    db.execute(text("SELECT 1"))
+    return {"status": "ok"}
+
+
+@app.post("/ingest", response_model=IngestResponse, dependencies=[Depends(require_api_key), Depends(require_rate_limit)])
 def ingest(payload: IngestRequest, service: RagService = Depends(get_service)) -> IngestResponse:
+    _validate_ingest_path(payload.input_path)
     stats = service.ingest(payload.input_path, payload.collection, payload.reindex)
     return IngestResponse(**stats)
 
 
-@app.post("/retrieve", response_model=RetrieveResponse, dependencies=[Depends(require_api_key)])
+@app.post("/retrieve", response_model=RetrieveResponse, dependencies=[Depends(require_api_key), Depends(require_rate_limit)])
 def retrieve(payload: RetrieveRequest, service: RagService = Depends(get_service)) -> RetrieveResponse:
     if len(payload.query) > settings.max_query_chars:
         raise HTTPException(status_code=413, detail="Query too large")
@@ -106,13 +136,13 @@ def retrieve(payload: RetrieveRequest, service: RagService = Depends(get_service
     return RetrieveResponse(hits=hits)
 
 
-@app.post("/query", response_model=QueryResponse, dependencies=[Depends(require_api_key)])
+@app.post("/query", response_model=QueryResponse, dependencies=[Depends(require_api_key), Depends(require_rate_limit)])
 def query(payload: QueryRequest, service: RagService = Depends(get_service)) -> QueryResponse:
     if len(payload.query) > settings.max_query_chars:
         raise HTTPException(status_code=413, detail="Query too large")
     return service.query(payload.query, payload.top_k, payload.min_score, payload.collection, payload.source_uris)
 
 
-@app.post("/sources", response_model=SourcesResponse, dependencies=[Depends(require_api_key)])
+@app.post("/sources", response_model=SourcesResponse, dependencies=[Depends(require_api_key), Depends(require_rate_limit)])
 def sources(payload: SourcesRequest, service: RagService = Depends(get_service)) -> SourcesResponse:
     return SourcesResponse(sources=service.list_sources(payload.collection))

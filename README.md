@@ -13,7 +13,8 @@ Production-oriented RAG microservice for WordPress integrations. The service ing
 - Fragment-level indexing with subchunking (`chunk_size=1500`, overlap `180` ≈ 12%).
 - Parser observability logs with parse mode and fallback-ratio alerts.
 - Quality monitoring CLI for Recall@k / nDCG regression checks across reference query sets.
-- X-API-Key authentication, JSON-only errors, query size limits, JSON logs.
+- X-API-Key authentication, per-IP in-memory rate limiting, JSON-only errors, query size limits, JSON logs.
+- `/healthz` liveness endpoint with DB connectivity check.
 
 ## Project tree
 
@@ -51,6 +52,9 @@ FAIL_ON_EMBEDDING_FALLBACK=true
 API_KEY=super-secret-key
 STORAGE_RAW=storage/raw
 REDIS_URL=
+APP_ENV=production
+INGEST_PATH_MUST_BE_UNDER_STORAGE_RAW=true
+RATE_LIMIT_PER_MINUTE=120
 ```
 
 ## Run with Docker Postgres
@@ -101,6 +105,12 @@ The report includes per-query and mean `Recall@k` / `nDCG@k` for regression moni
 
 ## API examples
 
+### Health
+
+```bash
+curl http://localhost:8000/healthz
+```
+
 ### Ingest
 
 ```bash
@@ -138,6 +148,9 @@ curl -X POST http://localhost:8000/sources \
 ```
 
 ## Notes
+- In production, set a strong `API_KEY` and never keep the default `change-me`.
+- In production, `APP_ENV=production` enforces non-default API key at startup.
+- `INGEST_PATH_MUST_BE_UNDER_STORAGE_RAW=true` protects from indexing arbitrary directories.
 - The parser uses RAG-Anything when available in runtime; if unavailable it degrades to lightweight local parsers for TXT/MD/PDF/DOCX.
 - `page` remains optional in all APIs.
 - In production keep `FAIL_ON_EMBEDDING_FALLBACK=true` to avoid silent hash-embedding fallback and low-quality retrieval.

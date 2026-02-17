@@ -5,7 +5,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "RAG Anything Service"
+    app_env: str = "development"
+
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/rag"
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
+    db_pool_recycle_seconds: int = 1800
+
     embed_dim: int = 384
     embed_model: str = "all-MiniLM-L6-v2"
     fail_on_embedding_fallback: bool = True
@@ -28,6 +34,9 @@ class Settings(BaseSettings):
 
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     parser_fallback_alert_threshold: float = 0.3
+
+    ingest_path_must_be_under_storage_raw: bool = True
+    rate_limit_per_minute: int = 120
 
 
 settings = Settings()
