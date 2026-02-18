@@ -83,7 +83,7 @@ class RAGAnythingParser:
                     },
                 )
                 logger.warning(
-                    "rag_anything_retry_text_only",
+                    "parser_degraded_mode_used",
                     extra={"path": str(path), "reason": "mineru_transformers_incompatible"},
                 )
                 try:
@@ -245,7 +245,9 @@ def _extract_error_text(exc: Exception) -> str:
 
 def _is_mineru_transformers_mismatch(exc: Exception) -> bool:
     text = _extract_error_text(exc).lower()
-    return "cache_position" in text or "unimermbartforcausallm" in text
+    has_cache_position = "cache_position" in text
+    has_unimer = "unimer" in text or "unimermbartforcausallm" in text
+    return has_cache_position and has_unimer
 
 
 def _extract_elements(result: Any) -> tuple[list[dict] | None, str]:

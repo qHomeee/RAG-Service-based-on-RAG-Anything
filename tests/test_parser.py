@@ -143,13 +143,14 @@ def test_dependency_mismatch_retries_text_only(tmp_path, monkeypatch, caplog):
 
     monkeypatch.setattr(parser, "_load_rag_parse_callable", fake_loader)
 
-    with caplog.at_level("ERROR", logger="rag_service"):
+    with caplog.at_level("WARNING", logger="rag_service"):
         elements, reason = parser._parse_with_rag_anything(sample)
 
     assert calls == [False, True]
     assert reason == "ok_text_only_retry"
     assert elements == [{"type": "text", "text": "retry ok"}]
     assert any("dependency_mismatch" in rec.message for rec in caplog.records)
+    assert any("parser_degraded_mode_used" in rec.message for rec in caplog.records)
 
 
 def test_dependency_compatibility_logs_mismatch(monkeypatch, caplog):
