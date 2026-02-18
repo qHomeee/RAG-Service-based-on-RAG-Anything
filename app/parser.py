@@ -207,3 +207,30 @@ def _build_callable_from_class(cls: Any, method_names: tuple[str, ...]) -> Calla
         if callable(method):
             return method
     return None
+
+
+def _run_awaitable(awaitable: Any) -> Any:
+    """Execute awaitable from sync context."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(awaitable)
+
+    result_box: dict[str, Any] = {}
+    error_box: dict[str, BaseException] = {}
+
+    def _runner() -> None:
+        try:
+            result_box["value"] = asyncio.run(awaitable)
+        except BaseException as exc:  # pragma: no cover
+            error_box["error"] = exc
+
+    import threading
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    thread.join()
+
+    if "error" in error_box:
+        raise error_box["error"]
+    return result_box.get("value")

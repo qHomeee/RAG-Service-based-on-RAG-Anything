@@ -99,3 +99,18 @@ def test_parse_with_rag_anything_accepts_list_payload(tmp_path, monkeypatch):
 
     assert reason == "ok"
     assert elements == [{"type": "text", "text": "a"}]
+
+
+def test_parse_with_rag_anything_awaits_coroutine_result(tmp_path, monkeypatch):
+    parser = RAGAnythingParser()
+    sample = tmp_path / "sample.txt"
+    sample.write_text("hello", encoding="utf-8")
+
+    async def _async_parse(_: str):
+        return {"elements": [{"type": "text", "text": "from async"}]}
+
+    monkeypatch.setattr(parser, "_load_rag_parse_callable", lambda: _async_parse)
+
+    elements, reason = parser._parse_with_rag_anything(sample)
+    assert reason == "ok"
+    assert elements == [{"type": "text", "text": "from async"}]
