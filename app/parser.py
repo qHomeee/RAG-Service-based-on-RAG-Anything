@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import tempfile
+from dataclasses import dataclass
+from functools import lru_cache
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -37,9 +40,18 @@ def log_dependency_compatibility() -> None:
                 "transformers_version": transformers_ver,
                 "mineru_version": mineru_ver,
                 "symptom": "cache_position / UnimerMBartForCausalLM incompatibility",
-                "recommendation": 'Use separate mineru venv via MINERU_PYTHON; core keeps transformers==4.35.0',
+                "recommendation": "Use separate mineru venv via MINERU_PYTHON; core keeps transformers==4.35.0",
             },
         )
+
+
+@dataclass(frozen=True)
+class MineruCliCaps:
+    supports_json: bool
+    output_dir_flag: str | None
+    disable_image_flag: str | None
+    disable_table_flag: str | None
+    disable_equation_flag: str | None
 
 
 class RAGAnythingParser:
@@ -102,37 +114,78 @@ class RAGAnythingParser:
             return None, f"exception:{type(exc).__name__}"
 
     def _run_mineru_subprocess(self, path: Path, *, text_only: bool) -> Any:
+        caps = self._detect_mineru_cli_caps(settings.mineru_python)
+        with tempfile.TemporaryDirectory(prefix="mineru_out_") as tmpdir:
+            out_dir = Path(tmpdir)
+            cmd = self._build_mineru_command(path=path, text_only=text_only, output_dir=out_dir, caps=caps)
+
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=settings.mineru_timeout_seconds,
+                check=False,
+            )
+
+            stdout = (proc.stdout or "").strip()
+            stderr = (proc.stderr or "").strip()
+            if proc.returncode != 0:
+                raise RuntimeError(f"mineru_returncode={proc.returncode}\ncmd={' '.join(cmd)}\nstdout={stdout}\nstderr={stderr}")
+
+            if caps.supports_json and stdout:
+                try:
+                    return json.loads(stdout)
+                except json.JSONDecodeError:
+                    logger.info("mineru_stdout_not_json", extra={"path": str(path)})
+
+            return _read_mineru_output_dir(out_dir)
+
+    @staticmethod
+    @lru_cache(maxsize=4)
+    def _detect_mineru_cli_caps(mineru_python: str) -> MineruCliCaps:
+        parse_help = _run_help_command([mineru_python, "-m", "mineru.cli.client", "parse_doc", "--help"])
+        full_help = _run_help_command([mineru_python, "-m", "mineru.cli.client", "--help"])
+        combined = f"{parse_help}\n{full_help}".lower()
+
+        output_flag = None
+        if "--output-dir" in combined:
+            output_flag = "--output-dir"
+        elif "--output_dir" in combined:
+            output_flag = "--output_dir"
+
+        return MineruCliCaps(
+            supports_json="--json" in combined,
+            output_dir_flag=output_flag,
+            disable_image_flag="--disable-image" if "--disable-image" in combined else None,
+            disable_table_flag="--disable-table" if "--disable-table" in combined else None,
+            disable_equation_flag="--disable-equation" if "--disable-equation" in combined else None,
+        )
+
+    @staticmethod
+    def _build_mineru_command(*, path: Path, text_only: bool, output_dir: Path, caps: MineruCliCaps) -> list[str]:
         cmd = [
             settings.mineru_python,
             "-m",
             "mineru.cli.client",
             "parse_doc",
             str(path),
-            "--json",
         ]
+
+        if caps.output_dir_flag:
+            cmd.extend([caps.output_dir_flag, str(output_dir)])
+
+        if caps.supports_json:
+            cmd.append("--json")
+
         if text_only:
-            cmd.extend(["--disable-image", "--disable-table", "--disable-equation"])
+            if caps.disable_image_flag:
+                cmd.append(caps.disable_image_flag)
+            if caps.disable_table_flag:
+                cmd.append(caps.disable_table_flag)
+            if caps.disable_equation_flag:
+                cmd.append(caps.disable_equation_flag)
 
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=settings.mineru_timeout_seconds,
-            check=False,
-        )
-
-        stdout = (proc.stdout or "").strip()
-        stderr = (proc.stderr or "").strip()
-        if proc.returncode != 0:
-            raise RuntimeError(f"mineru_returncode={proc.returncode}\nstdout={stdout}\nstderr={stderr}")
-
-        if not stdout:
-            raise RuntimeError("mineru_empty_stdout")
-
-        try:
-            return json.loads(stdout)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"mineru_invalid_json stdout={stdout[:500]}") from exc
+        return cmd
 
     def _normalize_elements(self, elements: list[dict]) -> list[ParsedElement]:
         normalized: list[ParsedElement] = []
@@ -181,6 +234,31 @@ class RAGAnythingParser:
             except Exception:
                 return []
         return []
+
+
+def _run_help_command(cmd: list[str]) -> str:
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
+    except Exception:
+        return ""
+    return f"{proc.stdout or ''}\n{proc.stderr or ''}"
+
+
+def _read_mineru_output_dir(output_dir: Path) -> Any:
+    json_candidates = sorted(output_dir.rglob("*.json"))
+    for candidate in json_candidates:
+        try:
+            return json.loads(candidate.read_text(encoding="utf-8", errors="ignore"))
+        except Exception:
+            continue
+
+    text_candidates = sorted([*output_dir.rglob("*.md"), *output_dir.rglob("*.txt")])
+    for candidate in text_candidates:
+        text = candidate.read_text(encoding="utf-8", errors="ignore").strip()
+        if text:
+            return {"elements": [{"type": "text", "text": text}]}
+
+    raise RuntimeError(f"mineru_output_not_found:{output_dir}")
 
 
 def _safe_version(pkg: str) -> str | None:

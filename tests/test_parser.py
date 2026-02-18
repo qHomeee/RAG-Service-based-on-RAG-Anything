@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from app.parser import RAGAnythingParser, log_dependency_compatibility
+from app.parser import MineruCliCaps, RAGAnythingParser, log_dependency_compatibility
 from app.schemas import ParsedElement
 
 
@@ -41,13 +41,57 @@ def test_logs_warning_when_mineru_throws(tmp_path, monkeypatch, caplog):
     assert any("mineru_execution_error" in rec.message for rec in caplog.records)
 
 
-def test_parse_with_mineru_subprocess_success(tmp_path, monkeypatch):
+def test_detect_cli_caps_without_json(monkeypatch):
+    def fake_run(cmd, capture_output, text, timeout, check):
+        if "parse_doc" in cmd:
+            return _Proc(stdout="Usage: parse_doc [OPTIONS]\n  --output-dir TEXT\n  --disable-image\n")
+        return _Proc(stdout="Usage: client [COMMAND]\n")
+
+    monkeypatch.setattr("app.parser.subprocess.run", fake_run)
+    RAGAnythingParser._detect_mineru_cli_caps.cache_clear()
+    caps = RAGAnythingParser._detect_mineru_cli_caps("python")
+
+    assert caps.supports_json is False
+    assert caps.output_dir_flag == "--output-dir"
+
+
+def test_build_command_without_json_flag():
+    caps = MineruCliCaps(
+        supports_json=False,
+        output_dir_flag="--output-dir",
+        disable_image_flag="--disable-image",
+        disable_table_flag=None,
+        disable_equation_flag=None,
+    )
+    cmd = RAGAnythingParser._build_mineru_command(
+        path=Path("a.pdf"),
+        text_only=True,
+        output_dir=Path("out"),
+        caps=caps,
+    )
+    assert "--json" not in cmd
+    assert "--output-dir" in cmd
+    assert "--disable-image" in cmd
+
+
+def test_mineru_subprocess_reads_output_dir_artifacts(tmp_path, monkeypatch):
     parser = RAGAnythingParser()
     sample = tmp_path / "sample.pdf"
-    sample.write_text("dummy", encoding="utf-8")
+    sample.write_bytes(b"%PDF-1.4")
 
-    def fake_run(*args, **kwargs):
-        return _Proc(returncode=0, stdout='{"elements":[{"type":"text","text":"ok"}]}')
+    caps = MineruCliCaps(
+        supports_json=False,
+        output_dir_flag="--output-dir",
+        disable_image_flag=None,
+        disable_table_flag=None,
+        disable_equation_flag=None,
+    )
+    monkeypatch.setattr(parser, "_detect_mineru_cli_caps", lambda _python: caps)
+
+    def fake_run(cmd, capture_output, text, timeout, check):
+        out_dir = Path(cmd[cmd.index("--output-dir") + 1])
+        (out_dir / "result.json").write_text('{"elements":[{"type":"text","text":"ok"}]}', encoding="utf-8")
+        return _Proc(returncode=0, stdout="")
 
     monkeypatch.setattr("app.parser.subprocess.run", fake_run)
     data = parser._run_mineru_subprocess(sample, text_only=False)
