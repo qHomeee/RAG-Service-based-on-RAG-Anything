@@ -67,8 +67,41 @@ UVICORN_WORKERS=2
 docker compose up -d
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-core.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+```
+
+
+## Windows install (two venv strategy)
+
+Core service environment:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements-core.txt
+```
+
+MinerU environment (isolated):
+
+```powershell
+python -m venv .venv-mineru
+.\.venv-mineru\Scripts\Activate.ps1
+pip install -r requirements-mineru.txt
+```
+
+Point service to MinerU python:
+
+```powershell
+$env:MINERU_PYTHON=".venv-mineru\Scripts\python.exe"
+```
+
+You can also run:
+
+```powershell
+.\scripts\setup_core.ps1
+.\scripts\setup_mineru.ps1
+.\scripts\doctor.ps1
 ```
 
 ## Run parser only (without API)
@@ -276,14 +309,14 @@ curl -X POST http://localhost:8000/sources -H "Content-Type: application/json" -
 - If your environment cannot resolve a pinned wheel for `pillow`, use the unpinned `pillow` entry from `requirements.txt` (already configured in this repo) so `pip` can pick a compatible build.
 - `RAG-Anything` pulls `mineru[core]`, which requires `pypdf>=5.6.0`; therefore this repo uses `pypdf>=5.6.0,<6` to avoid resolver conflicts.
 - If installation is still slow because of resolver backtracking, install core deps first and then install RAG-Anything last:
-  1. `pip install -r requirements.txt --no-deps`
+  1. `pip install -r requirements-core.txt --no-deps`
   2. `pip install "pypdf>=5.6.0,<6"`
   3. `pip install git+https://github.com/HKUDS/RAG-Anything.git`
 - For minimal text/PDF/docx ingestion, image-specific packages can be treated as optional if your deployment does not process image OCR/caption pipelines.
 - Newer releases may expose package name/layout as `raganything` (without underscore) and different internal modules; this service now auto-detects supported parser entrypoints across known layouts.
-- Parser resolver now checks `raganything` root entrypoint first (RAGAnything API), then `raganything.parser`; if your logs mention missing `rag_anything` (underscore), restart with latest code and verify the updated branch is running.
+- MinerU now runs via a separate python process (`MINERU_PYTHON`) so core dependencies remain conflict-free.
 - MinerU + transformers incompatibility (`cache_position`): if logs show `UnimerMBartForCausalLM.forward() got an unexpected keyword argument 'cache_position'`, pin transformers to MinerU-compatible version and restart service:
   1. `pip install "transformers==4.35.0"`
   2. restart API process (`uvicorn`/systemd).
-- Embeddings dependency mismatch (`split_torch_state_dict_into_shards` / `huggingface_hub` / `accelerate`): run `scripts/repair_env.ps1` (PowerShell) to reinstall a compatible stack (`huggingface-hub<0.18`, `tokenizers==0.14.1`), then restart API.
+- Embeddings dependency mismatch (`split_torch_state_dict_into_shards` / `huggingface_hub` / `accelerate`): run `scripts/repair_env.ps1` (PowerShell) to reinstall a compatible core stack (`huggingface-hub<0.18`, `tokenizers==0.14.1`), then restart API.
 - Recommended compatible ML stack for this service: `transformers==4.35.0`, `huggingface-hub>=0.16.4,<0.18`, `tokenizers==0.14.1`, `sentence-transformers>=2.2`, `safetensors` (accelerate moved to optional `requirements-accelerate.txt`).

@@ -4,7 +4,7 @@ Write-Host "[repair_env] uninstall conflicting HF packages..."
 pip uninstall -y accelerate huggingface-hub huggingface_hub transformers tokenizers
 
 Write-Host "[repair_env] reinstall core requirements..."
-pip install --no-cache-dir -r requirements.txt
+pip install --no-cache-dir -r requirements-core.txt
 
 Write-Host "[repair_env] sanity check 1 (transformers import/version)..."
 python -c "import transformers; print(transformers.__version__)"

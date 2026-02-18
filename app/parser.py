@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import asyncio
-import importlib
-import inspect
+import json
 import logging
+import subprocess
 from importlib import metadata
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
+from app.config import settings
 from app.schemas import ParsedElement
 from app.utils import normalize_text
 
@@ -21,6 +21,9 @@ def log_dependency_compatibility() -> None:
         "torch": _safe_version("torch"),
         "mineru": _safe_version("mineru"),
         "raganything": _safe_version("raganything"),
+        "sentence_transformers": _safe_version("sentence-transformers"),
+        "huggingface_hub": _safe_version("huggingface-hub") or _safe_version("huggingface_hub"),
+        "accelerate": _safe_version("accelerate"),
     }
     logger.info("dependency_versions", extra=versions)
 
@@ -34,24 +37,20 @@ def log_dependency_compatibility() -> None:
                 "transformers_version": transformers_ver,
                 "mineru_version": mineru_ver,
                 "symptom": "cache_position / UnimerMBartForCausalLM incompatibility",
-                "recommendation": 'pip install "transformers==4.35.0"',
+                "recommendation": 'Use separate mineru venv via MINERU_PYTHON; core keeps transformers==4.35.0',
             },
         )
 
 
 class RAGAnythingParser:
-    """Adapter over HKUDS/RAG-Anything parsing pipeline.
-
-    If the package is unavailable in runtime, it falls back to lightweight local parsers
-    to keep the service operational in constrained environments.
-    """
+    """Parser adapter that executes MinerU in a separate python environment via subprocess."""
 
     def parse_file(self, source_uri: str, path: Path) -> list[ParsedElement]:
         elements, _ = self.parse_file_with_mode(source_uri, path)
         return elements
 
     def parse_file_with_mode(self, source_uri: str, path: Path) -> tuple[list[ParsedElement], str]:
-        rag_elements, reason = self._parse_with_rag_anything(path)
+        rag_elements, reason = self._parse_with_mineru(path)
         if rag_elements:
             return self._normalize_elements(rag_elements), "rag_anything"
 
@@ -61,16 +60,13 @@ class RAGAnythingParser:
         )
         return self._fallback_parse(path), "fallback"
 
-    def _parse_with_rag_anything(self, path: Path) -> tuple[list[dict] | None, str]:
+    def _parse_with_mineru(self, path: Path) -> tuple[list[dict] | None, str]:
         try:
-            parse_callable = self._load_rag_parse_callable(text_only=False)
-            result = parse_callable(str(path))
-            if inspect.isawaitable(result):
-                result = _run_awaitable(result)
+            result = self._run_mineru_subprocess(path, text_only=False)
             elements, reason = _extract_elements(result)
-            if not elements:
-                return None, reason
-            return elements, "ok"
+            if elements:
+                return elements, "ok"
+            return None, reason
         except Exception as exc:
             if _is_mineru_transformers_mismatch(exc):
                 logger.error(
@@ -79,92 +75,64 @@ class RAGAnythingParser:
                         "component": "mineru",
                         "path": str(path),
                         "symptom": "cache_position / UnimerMBartForCausalLM incompatibility",
-                        "recommendation": 'pip install "transformers==4.35.0"',
+                        "recommendation": 'pip install "transformers==4.35.0" in core and keep MinerU in separate venv',
                     },
                 )
                 logger.warning(
                     "parser_degraded_mode_used",
-                    extra={"path": str(path), "reason": "mineru_transformers_incompatible"},
+                    extra={"path": str(path), "reason": "mineru_transformers_incompatible", "mode": "text_only_retry"},
                 )
                 try:
-                    parse_callable = self._load_rag_parse_callable(text_only=True)
-                    result = parse_callable(str(path))
-                    if inspect.isawaitable(result):
-                        result = _run_awaitable(result)
+                    result = self._run_mineru_subprocess(path, text_only=True)
                     elements, reason = _extract_elements(result)
                     if elements:
                         return elements, "ok_text_only_retry"
                     return None, f"text_only_retry:{reason}"
                 except Exception as retry_exc:
                     logger.warning(
-                        "rag_anything_text_only_retry_failed",
-                        extra={
-                            "path": str(path),
-                            "error_type": type(retry_exc).__name__,
-                            "error": str(retry_exc),
-                        },
+                        "mineru_execution_error",
+                        extra={"path": str(path), "error_type": type(retry_exc).__name__, "error": str(retry_exc)},
                     )
                     return None, f"dependency_mismatch:{type(retry_exc).__name__}"
 
             logger.warning(
-                "rag_anything_parse_failed",
+                "mineru_execution_error",
                 extra={"path": str(path), "error_type": type(exc).__name__, "error": str(exc)},
             )
             return None, f"exception:{type(exc).__name__}"
 
-    @staticmethod
-    def _load_rag_parse_callable(*, text_only: bool) -> Callable[[str], Any]:
-        module_names = (
-            "raganything",
-            "raganything.parser",
+    def _run_mineru_subprocess(self, path: Path, *, text_only: bool) -> Any:
+        cmd = [
+            settings.mineru_python,
+            "-m",
+            "mineru.cli.client",
+            "parse_doc",
+            str(path),
+            "--json",
+        ]
+        if text_only:
+            cmd.extend(["--disable-image", "--disable-table", "--disable-equation"])
+
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=settings.mineru_timeout_seconds,
+            check=False,
         )
-        class_names = (
-            "RAGAnything",
-            "RagAnything",
-            "RAGAnythingParser",
-            "DocumentParser",
-            "BatchParser",
-            "ParsingPipeline",
-            "Parser",
-        )
-        method_names = ("parse_document", "process_folder_complete", "parse", "parse_file", "run", "process")
-        function_names = ("parse_document", "process_folder_complete", "parse", "parse_file", "run", "process")
 
-        init_kwargs = {
-            "enable_image": not text_only,
-            "enable_table": not text_only,
-            "enable_equation": not text_only,
-            "parser": "mineru",
-            "parse_method": "auto",
-            "max_concurrent_files": 1,
-        }
+        stdout = (proc.stdout or "").strip()
+        stderr = (proc.stderr or "").strip()
+        if proc.returncode != 0:
+            raise RuntimeError(f"mineru_returncode={proc.returncode}\nstdout={stdout}\nstderr={stderr}")
 
-        last_exc: Exception | None = None
-        attempted: list[str] = []
+        if not stdout:
+            raise RuntimeError("mineru_empty_stdout")
 
-        for module_name in module_names:
-            attempted.append(module_name)
-            try:
-                module = importlib.import_module(module_name)
-            except Exception as exc:  # pragma: no cover - tested via failure path
-                last_exc = exc
-                continue
-
-            parse_callable = _resolve_parse_callable(
-                module,
-                class_names,
-                method_names,
-                function_names,
-                init_kwargs=init_kwargs,
-            )
-            if parse_callable is not None:
-                return parse_callable
-
-        if last_exc is not None:
-            raise ModuleNotFoundError(
-                f"RAG-Anything parser entrypoint not found. attempted={attempted}; last_error={type(last_exc).__name__}: {last_exc}"
-            ) from last_exc
-        raise ModuleNotFoundError(f"RAG-Anything parser entrypoint not found. attempted={attempted}")
+        try:
+            return json.loads(stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"mineru_invalid_json stdout={stdout[:500]}") from exc
 
     def _normalize_elements(self, elements: list[dict]) -> list[ParsedElement]:
         normalized: list[ParsedElement] = []
@@ -263,90 +231,3 @@ def _extract_elements(result: Any) -> tuple[list[dict] | None, str]:
         return None, "unexpected_list_payload"
 
     return None, f"unexpected_result_type:{type(result).__name__}"
-
-
-def _resolve_parse_callable(
-    module: Any,
-    class_names: tuple[str, ...],
-    method_names: tuple[str, ...],
-    function_names: tuple[str, ...],
-    *,
-    init_kwargs: dict[str, Any],
-) -> Callable[[str], Any] | None:
-    search_spaces = [module]
-    for nested_name in ("pipeline", "parser", "processor", "raganything"):
-        nested = getattr(module, nested_name, None)
-        if nested is not None:
-            search_spaces.append(nested)
-
-    for space in search_spaces:
-        for class_name in class_names:
-            cls = getattr(space, class_name, None)
-            callable_ = _build_callable_from_class(cls, method_names, init_kwargs)
-            if callable_ is not None:
-                return callable_
-
-    for space in search_spaces:
-        for function_name in function_names:
-            fn = getattr(space, function_name, None)
-            if callable(fn):
-                return fn
-
-    for space in search_spaces:
-        for _, member in inspect.getmembers(space, inspect.isclass):
-            callable_ = _build_callable_from_class(member, method_names, init_kwargs)
-            if callable_ is not None:
-                return callable_
-
-    return None
-
-
-def _build_callable_from_class(
-    cls: Any,
-    method_names: tuple[str, ...],
-    init_kwargs: dict[str, Any],
-) -> Callable[[str], Any] | None:
-    if not isinstance(cls, type):
-        return None
-
-    instance = None
-    try:
-        instance = cls(**init_kwargs)
-    except Exception:
-        try:
-            instance = cls()
-        except Exception:
-            return None
-
-    for method_name in method_names:
-        method = getattr(instance, method_name, None)
-        if callable(method):
-            return method
-    return None
-
-
-def _run_awaitable(awaitable: Any) -> Any:
-    """Execute awaitable from sync context."""
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(awaitable)
-
-    result_box: dict[str, Any] = {}
-    error_box: dict[str, BaseException] = {}
-
-    def _runner() -> None:
-        try:
-            result_box["value"] = asyncio.run(awaitable)
-        except BaseException as exc:  # pragma: no cover
-            error_box["error"] = exc
-
-    import threading
-
-    thread = threading.Thread(target=_runner, daemon=True)
-    thread.start()
-    thread.join()
-
-    if "error" in error_box:
-        raise error_box["error"]
-    return result_box.get("value")

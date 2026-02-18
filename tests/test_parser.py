@@ -4,122 +4,54 @@ from app.parser import RAGAnythingParser, log_dependency_compatibility
 from app.schemas import ParsedElement
 
 
-def test_logs_fallback_reason_when_rag_anything_empty(tmp_path, monkeypatch, caplog):
+class _Proc:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_logs_fallback_reason_when_mineru_empty(tmp_path, monkeypatch, caplog):
     parser = RAGAnythingParser()
     sample = tmp_path / "sample.txt"
     sample.write_text("hello", encoding="utf-8")
 
-    def fake_parse_with_rag(_: Path):
-        return None, "empty_elements"
-
-    monkeypatch.setattr(parser, "_parse_with_rag_anything", fake_parse_with_rag)
+    monkeypatch.setattr(parser, "_run_mineru_subprocess", lambda *_args, **_kwargs: {"elements": []})
 
     with caplog.at_level("INFO", logger="rag_service"):
         elements, mode = parser.parse_file_with_mode("sample.txt", sample)
 
     assert mode == "fallback"
     assert elements == [ParsedElement(element_index=0, type="text", content="hello", meta={"fallback": True})]
-    assert any("parser_fallback_used" in rec.message and "empty_elements" in str(rec.__dict__) for rec in caplog.records)
+    assert any("parser_fallback_used" in rec.message for rec in caplog.records)
 
 
-def test_logs_warning_when_rag_anything_throws(tmp_path, monkeypatch, caplog):
+def test_logs_warning_when_mineru_throws(tmp_path, monkeypatch, caplog):
     parser = RAGAnythingParser()
     sample = tmp_path / "sample.txt"
     sample.write_text("hello", encoding="utf-8")
 
-    def fake_loader(*, text_only: bool):
-        def _raise(_: str):
-            raise RuntimeError("boom")
-
-        return _raise
-
-    monkeypatch.setattr(parser, "_load_rag_parse_callable", fake_loader)
+    monkeypatch.setattr(parser, "_run_mineru_subprocess", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
 
     with caplog.at_level("WARNING", logger="rag_service"):
-        elements, reason = parser._parse_with_rag_anything(sample)
+        elements, reason = parser._parse_with_mineru(sample)
 
     assert elements is None
     assert reason.startswith("exception:")
-    assert any("rag_anything_parse_failed" in rec.message for rec in caplog.records)
+    assert any("mineru_execution_error" in rec.message for rec in caplog.records)
 
 
-def test_load_parse_callable_prefers_raganything_root(monkeypatch):
+def test_parse_with_mineru_subprocess_success(tmp_path, monkeypatch):
     parser = RAGAnythingParser()
-    calls = []
+    sample = tmp_path / "sample.pdf"
+    sample.write_text("dummy", encoding="utf-8")
 
-    class DummyModule:
-        class RAGAnything:
-            def __init__(self, **kwargs):
-                self.kwargs = kwargs
+    def fake_run(*args, **kwargs):
+        return _Proc(returncode=0, stdout='{"elements":[{"type":"text","text":"ok"}]}')
 
-            def parse_document(self, _: str):  # pragma: no cover - shape only
-                return {"elements": [{"type": "text", "text": "ok"}]}
-
-    def fake_import(name: str):
-        calls.append(name)
-        if name == "raganything":
-            return DummyModule
-        raise ModuleNotFoundError(name)
-
-    monkeypatch.setattr("app.parser.importlib.import_module", fake_import)
-
-    parse_callable = parser._load_rag_parse_callable(text_only=False)
-    assert callable(parse_callable)
-    assert calls == ["raganything"]
-
-
-def test_load_parse_callable_supports_parser_module_class(monkeypatch):
-    parser = RAGAnythingParser()
-
-    class DummyParserModule:
-        class DocumentParser:
-            def __init__(self, **kwargs):
-                self.kwargs = kwargs
-
-            def parse_file(self, _: str):  # pragma: no cover - shape only
-                return {"elements": [{"type": "text", "text": "ok"}]}
-
-    def fake_import(name: str):
-        if name == "raganything":
-            raise ModuleNotFoundError(name)
-        if name == "raganything.parser":
-            return DummyParserModule
-        raise ModuleNotFoundError(name)
-
-    monkeypatch.setattr("app.parser.importlib.import_module", fake_import)
-
-    parse_callable = parser._load_rag_parse_callable(text_only=False)
-    assert callable(parse_callable)
-
-
-def test_parse_with_rag_anything_accepts_list_payload(tmp_path, monkeypatch):
-    parser = RAGAnythingParser()
-    sample = tmp_path / "sample.txt"
-    sample.write_text("hello", encoding="utf-8")
-
-    def fake_loader(*, text_only: bool):
-        return lambda _: [{"type": "text", "text": "a"}]
-
-    monkeypatch.setattr(parser, "_load_rag_parse_callable", fake_loader)
-    elements, reason = parser._parse_with_rag_anything(sample)
-
-    assert reason == "ok"
-    assert elements == [{"type": "text", "text": "a"}]
-
-
-def test_parse_with_rag_anything_awaits_coroutine_result(tmp_path, monkeypatch):
-    parser = RAGAnythingParser()
-    sample = tmp_path / "sample.txt"
-    sample.write_text("hello", encoding="utf-8")
-
-    async def _async_parse(_: str):
-        return {"elements": [{"type": "text", "text": "from async"}]}
-
-    monkeypatch.setattr(parser, "_load_rag_parse_callable", lambda *, text_only: _async_parse)
-
-    elements, reason = parser._parse_with_rag_anything(sample)
-    assert reason == "ok"
-    assert elements == [{"type": "text", "text": "from async"}]
+    monkeypatch.setattr("app.parser.subprocess.run", fake_run)
+    data = parser._run_mineru_subprocess(sample, text_only=False)
+    assert data["elements"][0]["text"] == "ok"
 
 
 def test_dependency_mismatch_retries_text_only(tmp_path, monkeypatch, caplog):
@@ -129,22 +61,16 @@ def test_dependency_mismatch_retries_text_only(tmp_path, monkeypatch, caplog):
 
     calls: list[bool] = []
 
-    def fake_loader(*, text_only: bool):
+    def fake_run(path, *, text_only: bool):
         calls.append(text_only)
         if not text_only:
-            def _raise(_: str):
-                raise RuntimeError("UnimerMBartForCausalLM.forward() got an unexpected keyword argument 'cache_position'")
-            return _raise
+            raise RuntimeError("UnimerMBartForCausalLM.forward() got an unexpected keyword argument 'cache_position'")
+        return {"elements": [{"type": "text", "text": "retry ok"}]}
 
-        def _ok(_: str):
-            return {"elements": [{"type": "text", "text": "retry ok"}]}
-
-        return _ok
-
-    monkeypatch.setattr(parser, "_load_rag_parse_callable", fake_loader)
+    monkeypatch.setattr(parser, "_run_mineru_subprocess", fake_run)
 
     with caplog.at_level("WARNING", logger="rag_service"):
-        elements, reason = parser._parse_with_rag_anything(sample)
+        elements, reason = parser._parse_with_mineru(sample)
 
     assert calls == [False, True]
     assert reason == "ok_text_only_retry"
@@ -159,6 +85,9 @@ def test_dependency_compatibility_logs_mismatch(monkeypatch, caplog):
         "torch": "2.10.0",
         "mineru": "2.0.6",
         "raganything": "1.2.9",
+        "sentence-transformers": "2.2.2",
+        "huggingface-hub": "0.17.3",
+        "accelerate": None,
     }
 
     monkeypatch.setattr("app.parser._safe_version", lambda pkg: versions.get(pkg))
