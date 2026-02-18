@@ -22,10 +22,18 @@ def test_logs_fallback_reason_when_rag_anything_empty(tmp_path, monkeypatch, cap
     assert any("parser_fallback_used" in rec.message and "empty_elements" in str(rec.__dict__) for rec in caplog.records)
 
 
-def test_logs_warning_when_rag_anything_throws(tmp_path, caplog):
+def test_logs_warning_when_rag_anything_throws(tmp_path, monkeypatch, caplog):
     parser = RAGAnythingParser()
     sample = tmp_path / "sample.txt"
     sample.write_text("hello", encoding="utf-8")
+
+    def fake_loader():
+        def _raise(_: str):
+            raise RuntimeError("boom")
+
+        return _raise
+
+    monkeypatch.setattr(parser, "_load_rag_parse_callable", fake_loader)
 
     with caplog.at_level("WARNING", logger="rag_service"):
         elements, reason = parser._parse_with_rag_anything(sample)
@@ -35,18 +43,18 @@ def test_logs_warning_when_rag_anything_throws(tmp_path, caplog):
     assert any("rag_anything_parse_failed" in rec.message for rec in caplog.records)
 
 
-def test_load_parse_callable_supports_pipeline_alias(monkeypatch):
+def test_load_parse_callable_prefers_raganything_root(monkeypatch):
     parser = RAGAnythingParser()
     calls = []
 
     class DummyModule:
-        class ParsingPipeline:
-            def parse(self, _: str):  # pragma: no cover - shape only
+        class RAGAnything:
+            def parse_document(self, _: str):  # pragma: no cover - shape only
                 return {"elements": [{"type": "text", "text": "ok"}]}
 
     def fake_import(name: str):
         calls.append(name)
-        if name == "raganything.pipeline":
+        if name == "raganything":
             return DummyModule
         raise ModuleNotFoundError(name)
 
@@ -54,7 +62,7 @@ def test_load_parse_callable_supports_pipeline_alias(monkeypatch):
 
     parse_callable = parser._load_rag_parse_callable()
     assert callable(parse_callable)
-    assert calls == ["raganything.pipeline"]
+    assert calls == ["raganything"]
 
 
 def test_load_parse_callable_supports_parser_module_class(monkeypatch):
@@ -66,7 +74,7 @@ def test_load_parse_callable_supports_parser_module_class(monkeypatch):
                 return {"elements": [{"type": "text", "text": "ok"}]}
 
     def fake_import(name: str):
-        if name == "raganything.pipeline":
+        if name == "raganything":
             raise ModuleNotFoundError(name)
         if name == "raganything.parser":
             return DummyParserModule

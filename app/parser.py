@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import inspect
 import logging
@@ -39,6 +40,8 @@ class RAGAnythingParser:
         try:
             parse_callable = self._load_rag_parse_callable()
             result = parse_callable(str(path))
+            if inspect.isawaitable(result):
+                result = _run_awaitable(result)
             elements, reason = _extract_elements(result)
             if not elements:
                 return None, reason
@@ -53,24 +56,20 @@ class RAGAnythingParser:
     @staticmethod
     def _load_rag_parse_callable() -> Callable[[str], Any]:
         module_names = (
-            "raganything.pipeline",
-            "raganything.parser",
-            "raganything.raganything",
-            "raganything.processor",
-            "raganything.batch_parser",
             "raganything",
+            "raganything.parser",
         )
         class_names = (
-            "ParsingPipeline",
             "RAGAnything",
             "RagAnything",
             "RAGAnythingParser",
-            "Parser",
             "DocumentParser",
             "BatchParser",
+            "ParsingPipeline",
+            "Parser",
         )
-        method_names = ("parse", "parse_file", "run", "process")
-        function_names = ("parse", "parse_file", "run", "process")
+        method_names = ("parse_document", "process_folder_complete", "parse", "parse_file", "run", "process")
+        function_names = ("parse_document", "process_folder_complete", "parse", "parse_file", "run", "process")
 
         last_exc: Exception | None = None
         attempted: list[str] = []
