@@ -15,7 +15,7 @@ from app.db import SessionLocal, engine
 from app.embeddings import EmbeddingProvider
 from app.models import Base
 from app.observability import slo_metrics
-from app.parser import RAGAnythingParser
+from app.parser import RAGAnythingParser, log_dependency_compatibility
 from app.repository import RagRepository
 from app.reranker import CrossEncoderReranker
 from app.schemas import (
@@ -87,6 +87,7 @@ def _validate_ingest_path(input_path: str) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _validate_secure_settings()
+    log_dependency_compatibility()
     Base.metadata.create_all(bind=engine)
     app.state.parser = RAGAnythingParser()
     app.state.embeddings = EmbeddingProvider()

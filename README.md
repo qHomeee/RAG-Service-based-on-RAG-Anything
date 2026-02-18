@@ -282,3 +282,6 @@ curl -X POST http://localhost:8000/sources -H "Content-Type: application/json" -
 - For minimal text/PDF/docx ingestion, image-specific packages can be treated as optional if your deployment does not process image OCR/caption pipelines.
 - Newer releases may expose package name/layout as `raganything` (without underscore) and different internal modules; this service now auto-detects supported parser entrypoints across known layouts.
 - Parser resolver now checks `raganything` root entrypoint first (RAGAnything API), then `raganything.parser`; if your logs mention missing `rag_anything` (underscore), restart with latest code and verify the updated branch is running.
+- MinerU + transformers incompatibility (`cache_position`): if logs show `UnimerMBartForCausalLM.forward() got an unexpected keyword argument 'cache_position'`, pin transformers to MinerU-compatible version and restart service:
+  1. `pip install "transformers==4.35.0"`
+  2. restart API process (`uvicorn`/systemd).

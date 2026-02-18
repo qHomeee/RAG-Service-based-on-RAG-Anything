@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import inspect
 import logging
+from importlib import metadata
 from pathlib import Path
 from typing import Any, Callable
 
@@ -12,6 +13,30 @@ from app.utils import normalize_text
 
 
 logger = logging.getLogger("rag_service")
+
+
+def log_dependency_compatibility() -> None:
+    versions = {
+        "transformers": _safe_version("transformers"),
+        "torch": _safe_version("torch"),
+        "mineru": _safe_version("mineru"),
+        "raganything": _safe_version("raganything"),
+    }
+    logger.info("dependency_versions", extra=versions)
+
+    transformers_ver = versions["transformers"]
+    mineru_ver = versions["mineru"]
+    if mineru_ver and transformers_ver and _is_transformers_likely_incompatible(transformers_ver):
+        logger.error(
+            "dependency_mismatch",
+            extra={
+                "component": "mineru",
+                "transformers_version": transformers_ver,
+                "mineru_version": mineru_ver,
+                "symptom": "cache_position / UnimerMBartForCausalLM incompatibility",
+                "recommendation": 'pip install "transformers==4.35.0"',
+            },
+        )
 
 
 class RAGAnythingParser:
@@ -38,7 +63,7 @@ class RAGAnythingParser:
 
     def _parse_with_rag_anything(self, path: Path) -> tuple[list[dict] | None, str]:
         try:
-            parse_callable = self._load_rag_parse_callable()
+            parse_callable = self._load_rag_parse_callable(text_only=False)
             result = parse_callable(str(path))
             if inspect.isawaitable(result):
                 result = _run_awaitable(result)
@@ -47,6 +72,40 @@ class RAGAnythingParser:
                 return None, reason
             return elements, "ok"
         except Exception as exc:
+            if _is_mineru_transformers_mismatch(exc):
+                logger.error(
+                    "dependency_mismatch",
+                    extra={
+                        "component": "mineru",
+                        "path": str(path),
+                        "symptom": "cache_position / UnimerMBartForCausalLM incompatibility",
+                        "recommendation": 'pip install "transformers==4.35.0"',
+                    },
+                )
+                logger.warning(
+                    "rag_anything_retry_text_only",
+                    extra={"path": str(path), "reason": "mineru_transformers_incompatible"},
+                )
+                try:
+                    parse_callable = self._load_rag_parse_callable(text_only=True)
+                    result = parse_callable(str(path))
+                    if inspect.isawaitable(result):
+                        result = _run_awaitable(result)
+                    elements, reason = _extract_elements(result)
+                    if elements:
+                        return elements, "ok_text_only_retry"
+                    return None, f"text_only_retry:{reason}"
+                except Exception as retry_exc:
+                    logger.warning(
+                        "rag_anything_text_only_retry_failed",
+                        extra={
+                            "path": str(path),
+                            "error_type": type(retry_exc).__name__,
+                            "error": str(retry_exc),
+                        },
+                    )
+                    return None, f"dependency_mismatch:{type(retry_exc).__name__}"
+
             logger.warning(
                 "rag_anything_parse_failed",
                 extra={"path": str(path), "error_type": type(exc).__name__, "error": str(exc)},
@@ -54,7 +113,7 @@ class RAGAnythingParser:
             return None, f"exception:{type(exc).__name__}"
 
     @staticmethod
-    def _load_rag_parse_callable() -> Callable[[str], Any]:
+    def _load_rag_parse_callable(*, text_only: bool) -> Callable[[str], Any]:
         module_names = (
             "raganything",
             "raganything.parser",
@@ -71,6 +130,15 @@ class RAGAnythingParser:
         method_names = ("parse_document", "process_folder_complete", "parse", "parse_file", "run", "process")
         function_names = ("parse_document", "process_folder_complete", "parse", "parse_file", "run", "process")
 
+        init_kwargs = {
+            "enable_image": not text_only,
+            "enable_table": not text_only,
+            "enable_equation": not text_only,
+            "parser": "mineru",
+            "parse_method": "auto",
+            "max_concurrent_files": 1,
+        }
+
         last_exc: Exception | None = None
         attempted: list[str] = []
 
@@ -82,7 +150,13 @@ class RAGAnythingParser:
                 last_exc = exc
                 continue
 
-            parse_callable = _resolve_parse_callable(module, class_names, method_names, function_names)
+            parse_callable = _resolve_parse_callable(
+                module,
+                class_names,
+                method_names,
+                function_names,
+                init_kwargs=init_kwargs,
+            )
             if parse_callable is not None:
                 return parse_callable
 
@@ -141,6 +215,39 @@ class RAGAnythingParser:
         return []
 
 
+def _safe_version(pkg: str) -> str | None:
+    try:
+        return metadata.version(pkg)
+    except metadata.PackageNotFoundError:
+        return None
+    except Exception:
+        return None
+
+
+def _is_transformers_likely_incompatible(version_str: str) -> bool:
+    try:
+        major, minor, *_ = [int(p) for p in version_str.split(".")]
+    except Exception:
+        return False
+    return (major, minor) >= (4, 36)
+
+
+def _extract_error_text(exc: Exception) -> str:
+    parts = [str(exc)]
+    args = getattr(exc, "args", ())
+    parts.extend(str(a) for a in args)
+    for attr in ("stdout", "stderr", "output", "message"):
+        val = getattr(exc, attr, None)
+        if val:
+            parts.append(str(val))
+    return "\n".join(parts)
+
+
+def _is_mineru_transformers_mismatch(exc: Exception) -> bool:
+    text = _extract_error_text(exc).lower()
+    return "cache_position" in text or "unimermbartforcausallm" in text
+
+
 def _extract_elements(result: Any) -> tuple[list[dict] | None, str]:
     if isinstance(result, dict):
         elements = result.get("elements", [])
@@ -161,6 +268,8 @@ def _resolve_parse_callable(
     class_names: tuple[str, ...],
     method_names: tuple[str, ...],
     function_names: tuple[str, ...],
+    *,
+    init_kwargs: dict[str, Any],
 ) -> Callable[[str], Any] | None:
     search_spaces = [module]
     for nested_name in ("pipeline", "parser", "processor", "raganything"):
@@ -168,39 +277,44 @@ def _resolve_parse_callable(
         if nested is not None:
             search_spaces.append(nested)
 
-    # Preferred explicit class names first.
     for space in search_spaces:
         for class_name in class_names:
             cls = getattr(space, class_name, None)
-            callable_ = _build_callable_from_class(cls, method_names)
+            callable_ = _build_callable_from_class(cls, method_names, init_kwargs)
             if callable_ is not None:
                 return callable_
 
-    # Then module-level functions.
     for space in search_spaces:
         for function_name in function_names:
             fn = getattr(space, function_name, None)
             if callable(fn):
                 return fn
 
-    # Finally scan any class exposing parse-like methods.
     for space in search_spaces:
         for _, member in inspect.getmembers(space, inspect.isclass):
-            callable_ = _build_callable_from_class(member, method_names)
+            callable_ = _build_callable_from_class(member, method_names, init_kwargs)
             if callable_ is not None:
                 return callable_
 
     return None
 
 
-def _build_callable_from_class(cls: Any, method_names: tuple[str, ...]) -> Callable[[str], Any] | None:
+def _build_callable_from_class(
+    cls: Any,
+    method_names: tuple[str, ...],
+    init_kwargs: dict[str, Any],
+) -> Callable[[str], Any] | None:
     if not isinstance(cls, type):
         return None
 
+    instance = None
     try:
-        instance = cls()
+        instance = cls(**init_kwargs)
     except Exception:
-        return None
+        try:
+            instance = cls()
+        except Exception:
+            return None
 
     for method_name in method_names:
         method = getattr(instance, method_name, None)
