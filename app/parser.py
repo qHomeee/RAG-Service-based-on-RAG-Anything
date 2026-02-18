@@ -53,13 +53,11 @@ class RAGAnythingParser:
     @staticmethod
     def _load_rag_parse_callable() -> Callable[[str], Any]:
         module_names = (
-            "rag_anything.pipeline",
             "raganything.pipeline",
-            "rag_anything.parser",
             "raganything.parser",
-            "rag_anything.raganything",
             "raganything.raganything",
-            "rag_anything",
+            "raganything.processor",
+            "raganything.batch_parser",
             "raganything",
         )
         class_names = (

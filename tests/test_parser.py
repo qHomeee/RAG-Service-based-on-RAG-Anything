@@ -46,8 +46,6 @@ def test_load_parse_callable_supports_pipeline_alias(monkeypatch):
 
     def fake_import(name: str):
         calls.append(name)
-        if name == "rag_anything.pipeline":
-            raise ModuleNotFoundError("legacy name unavailable")
         if name == "raganything.pipeline":
             return DummyModule
         raise ModuleNotFoundError(name)
@@ -56,7 +54,7 @@ def test_load_parse_callable_supports_pipeline_alias(monkeypatch):
 
     parse_callable = parser._load_rag_parse_callable()
     assert callable(parse_callable)
-    assert calls == ["rag_anything.pipeline", "raganything.pipeline"]
+    assert calls == ["raganything.pipeline"]
 
 
 def test_load_parse_callable_supports_parser_module_class(monkeypatch):
@@ -68,7 +66,7 @@ def test_load_parse_callable_supports_parser_module_class(monkeypatch):
                 return {"elements": [{"type": "text", "text": "ok"}]}
 
     def fake_import(name: str):
-        if name in {"rag_anything.pipeline", "raganything.pipeline", "rag_anything.parser"}:
+        if name == "raganything.pipeline":
             raise ModuleNotFoundError(name)
         if name == "raganything.parser":
             return DummyParserModule
