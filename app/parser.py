@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from app.schemas import ParsedElement
 from app.utils import normalize_text
+
+
+logger = logging.getLogger("rag_service")
 
 
 class RAGAnythingParser:
@@ -18,21 +22,36 @@ class RAGAnythingParser:
         return elements
 
     def parse_file_with_mode(self, source_uri: str, path: Path) -> tuple[list[ParsedElement], str]:
-        rag_elements = self._parse_with_rag_anything(path)
+        rag_elements, reason = self._parse_with_rag_anything(path)
         if rag_elements:
             return self._normalize_elements(rag_elements), "rag_anything"
+
+        logger.info(
+            "parser_fallback_used",
+            extra={"source_uri": source_uri, "path": str(path), "reason": reason},
+        )
         return self._fallback_parse(path), "fallback"
 
-    def _parse_with_rag_anything(self, path: Path) -> list[dict] | None:
+    def _parse_with_rag_anything(self, path: Path) -> tuple[list[dict] | None, str]:
         try:
             # API shape may vary between revisions; defensive adapter.
             from rag_anything import pipeline as rag_pipeline  # type: ignore
 
             parser = rag_pipeline.ParsingPipeline()
             result = parser.parse(str(path))
-            return result.get("elements", []) if isinstance(result, dict) else []
-        except Exception:
-            return None
+            if not isinstance(result, dict):
+                return None, f"unexpected_result_type:{type(result).__name__}"
+
+            elements = result.get("elements", [])
+            if not elements:
+                return None, "empty_elements"
+            return elements, "ok"
+        except Exception as exc:
+            logger.warning(
+                "rag_anything_parse_failed",
+                extra={"path": str(path), "error_type": type(exc).__name__, "error": str(exc)},
+            )
+            return None, f"exception:{type(exc).__name__}"
 
     def _normalize_elements(self, elements: list[dict]) -> list[ParsedElement]:
         normalized: list[ParsedElement] = []
