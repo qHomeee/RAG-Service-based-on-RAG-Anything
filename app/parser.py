@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.schemas import ParsedElement
 from app.utils import normalize_text
@@ -36,17 +37,11 @@ class RAGAnythingParser:
 
     def _parse_with_rag_anything(self, path: Path) -> tuple[list[dict] | None, str]:
         try:
-            # API shape may vary between revisions; defensive adapter.
-            parsing_pipeline_cls = self._load_rag_pipeline_class()
-
-            parser = parsing_pipeline_cls()
-            result = parser.parse(str(path))
-            if not isinstance(result, dict):
-                return None, f"unexpected_result_type:{type(result).__name__}"
-
-            elements = result.get("elements", [])
+            parse_callable = self._load_rag_parse_callable()
+            result = parse_callable(str(path))
+            elements, reason = _extract_elements(result)
             if not elements:
-                return None, "empty_elements"
+                return None, reason
             return elements, "ok"
         except Exception as exc:
             logger.warning(
@@ -56,7 +51,7 @@ class RAGAnythingParser:
             return None, f"exception:{type(exc).__name__}"
 
     @staticmethod
-    def _load_rag_pipeline_class():
+    def _load_rag_parse_callable() -> Callable[[str], Any]:
         module_names = (
             "rag_anything.pipeline",
             "raganything.pipeline",
@@ -74,7 +69,11 @@ class RAGAnythingParser:
             "RAGAnythingParser",
             "Parser",
             "DocumentParser",
+            "BatchParser",
         )
+        method_names = ("parse", "parse_file", "run", "process")
+        function_names = ("parse", "parse_file", "run", "process")
+
         last_exc: Exception | None = None
         attempted: list[str] = []
 
@@ -86,9 +85,9 @@ class RAGAnythingParser:
                 last_exc = exc
                 continue
 
-            pipeline_class = _resolve_pipeline_class(module, class_names)
-            if pipeline_class is not None:
-                return pipeline_class
+            parse_callable = _resolve_parse_callable(module, class_names, method_names, function_names)
+            if parse_callable is not None:
+                return parse_callable
 
         if last_exc is not None:
             raise ModuleNotFoundError(
@@ -145,17 +144,69 @@ class RAGAnythingParser:
         return []
 
 
-def _resolve_pipeline_class(module: Any, class_names: tuple[str, ...]):
-    for class_name in class_names:
-        candidate = getattr(module, class_name, None)
-        if isinstance(candidate, type):
-            return candidate
+def _extract_elements(result: Any) -> tuple[list[dict] | None, str]:
+    if isinstance(result, dict):
+        elements = result.get("elements", [])
+        if isinstance(elements, list) and elements:
+            return elements, "ok"
+        return None, "empty_elements"
 
-    nested_pipeline = getattr(module, "pipeline", None)
-    if nested_pipeline is not None:
+    if isinstance(result, list):
+        if result and isinstance(result[0], dict):
+            return result, "ok"
+        return None, "unexpected_list_payload"
+
+    return None, f"unexpected_result_type:{type(result).__name__}"
+
+
+def _resolve_parse_callable(
+    module: Any,
+    class_names: tuple[str, ...],
+    method_names: tuple[str, ...],
+    function_names: tuple[str, ...],
+) -> Callable[[str], Any] | None:
+    search_spaces = [module]
+    for nested_name in ("pipeline", "parser", "processor", "raganything"):
+        nested = getattr(module, nested_name, None)
+        if nested is not None:
+            search_spaces.append(nested)
+
+    # Preferred explicit class names first.
+    for space in search_spaces:
         for class_name in class_names:
-            candidate = getattr(nested_pipeline, class_name, None)
-            if isinstance(candidate, type):
-                return candidate
+            cls = getattr(space, class_name, None)
+            callable_ = _build_callable_from_class(cls, method_names)
+            if callable_ is not None:
+                return callable_
 
+    # Then module-level functions.
+    for space in search_spaces:
+        for function_name in function_names:
+            fn = getattr(space, function_name, None)
+            if callable(fn):
+                return fn
+
+    # Finally scan any class exposing parse-like methods.
+    for space in search_spaces:
+        for _, member in inspect.getmembers(space, inspect.isclass):
+            callable_ = _build_callable_from_class(member, method_names)
+            if callable_ is not None:
+                return callable_
+
+    return None
+
+
+def _build_callable_from_class(cls: Any, method_names: tuple[str, ...]) -> Callable[[str], Any] | None:
+    if not isinstance(cls, type):
+        return None
+
+    try:
+        instance = cls()
+    except Exception:
+        return None
+
+    for method_name in method_names:
+        method = getattr(instance, method_name, None)
+        if callable(method):
+            return method
     return None
