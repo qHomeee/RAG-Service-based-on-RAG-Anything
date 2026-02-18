@@ -180,6 +180,86 @@ curl -X POST http://localhost:8000/sources \
   -d '{"collection":"default"}'
 ```
 
+
+### Готовые запросы и типовые ответы
+
+> Ниже примеры в одну строку для **Windows CMD** (`cmd.exe`).
+
+**GET /healthz**
+
+```bat
+curl http://localhost:8000/healthz -H "X-API-Key: super-secret-key"
+```
+
+Ответ:
+
+```json
+{"status":"ok"}
+```
+
+**POST /ingest** (только admin key)
+
+```bat
+curl -X POST http://localhost:8000/ingest -H "Content-Type: application/json" -H "X-Admin-API-Key: super-admin-secret-key" -d "{\"input_path\":\"storage/raw\",\"collection\":\"default\",\"reindex\":false}"
+```
+
+Ответ (пример):
+
+```json
+{"indexed_docs":1,"indexed_fragments":42,"indexed_vectors":58}
+```
+
+**POST /retrieve**
+
+```bat
+curl -X POST http://localhost:8000/retrieve -H "Content-Type: application/json" -H "X-API-Key: super-secret-key" -d "{\"query\":\"тема урока: стили речи\",\"top_k\":3,\"min_score\":0.45,\"collection\":\"default\"}"
+```
+
+Ответ (пример):
+
+```json
+{"hits":[{"fragment_id":"f1","source_uri":"pub_1167883.pdf","title":"pub_1167883.pdf","type":"text","page":12,"snippet":"...","score":0.9123,"text":null}]}
+```
+
+**POST /query**
+
+```bat
+curl -X POST http://localhost:8000/query -H "Content-Type: application/json" -H "X-API-Key: super-secret-key" -d "{\"query\":\"стили речи\",\"top_k\":3,\"min_score\":0.45,\"mode\":\"grounded\",\"citation_style\":\"fragments\",\"return_sources\":true,\"collection\":\"default\"}"
+```
+
+Ответ (пример):
+
+```json
+{"answer":"Найденные подтверждённые фрагменты:
+[1] ...","sources":[{"n":1,"fragment_id":"f1","source_uri":"pub_1167883.pdf","snippet":"...","score":0.9123,"page":12,"type":"text"}]}
+```
+
+**POST /sources**
+
+```bat
+curl -X POST http://localhost:8000/sources -H "Content-Type: application/json" -H "X-API-Key: super-secret-key" -d "{\"collection\":\"default\"}"
+```
+
+Ответ (пример):
+
+```json
+{"sources":[{"source_uri":"pub_1167883.pdf","title":"pub_1167883.pdf"}]}
+```
+
+Частые ошибки:
+
+```json
+{"error":"Invalid API key"}
+```
+
+```json
+{"error":"Invalid admin API key"}
+```
+
+```json
+{"error":"input_path must be an existing directory"}
+```
+
 ## Notes
 - In production, set strong `API_KEY` and `ADMIN_API_KEY`, never keep defaults (`change-me`, `change-me-admin`).
 - In production, `APP_ENV=production` enforces non-default API keys at startup.

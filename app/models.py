@@ -1,6 +1,7 @@
 import uuid
 
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 try:
@@ -16,7 +17,7 @@ class Base(DeclarativeBase):
 class Document(Base):
     __tablename__ = "documents"
 
-    doc_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    doc_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     source_uri: Mapped[str] = mapped_column(String, unique=True, index=True)
     title: Mapped[str | None] = mapped_column(String, nullable=True)
     collection: Mapped[str] = mapped_column(String, default="default", index=True)
@@ -30,7 +31,7 @@ class Fragment(Base):
     __tablename__ = "fragments"
 
     fragment_id: Mapped[str] = mapped_column(String, primary_key=True)
-    doc_id: Mapped[str] = mapped_column(ForeignKey("documents.doc_id", ondelete="CASCADE"), index=True)
+    doc_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.doc_id", ondelete="CASCADE"), index=True)
     source_uri: Mapped[str] = mapped_column(String, index=True)
     type: Mapped[str] = mapped_column(String)
     page: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -47,7 +48,7 @@ class Embedding(Base):
     __tablename__ = "embeddings"
     __table_args__ = (UniqueConstraint("fragment_id", "subchunk_index", name="uq_fragment_subchunk"),)
 
-    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     fragment_id: Mapped[str] = mapped_column(ForeignKey("fragments.fragment_id", ondelete="CASCADE"), index=True)
     subchunk_index: Mapped[int] = mapped_column(Integer)
     text: Mapped[str] = mapped_column(Text)
