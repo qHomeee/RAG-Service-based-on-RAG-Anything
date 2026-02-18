@@ -36,7 +36,7 @@ def test_logs_warning_when_rag_anything_throws(tmp_path, caplog):
     assert any("rag_anything_parse_failed" in rec.message for rec in caplog.records)
 
 
-def test_load_pipeline_module_supports_raganything_alias(monkeypatch):
+def test_load_pipeline_class_supports_raganything_pipeline_alias(monkeypatch):
     parser = RAGAnythingParser()
 
     calls = []
@@ -55,6 +55,33 @@ def test_load_pipeline_module_supports_raganything_alias(monkeypatch):
 
     monkeypatch.setattr("app.parser.importlib.import_module", fake_import)
 
-    module = parser._load_rag_pipeline_module()
-    assert module is DummyModule
+    parsing_pipeline_cls = parser._load_rag_pipeline_class()
+    assert parsing_pipeline_cls is DummyModule.ParsingPipeline
     assert calls == ["rag_anything.pipeline", "raganything.pipeline"]
+
+
+def test_load_pipeline_class_supports_root_module_pipeline_attr(monkeypatch):
+    parser = RAGAnythingParser()
+
+    calls = []
+
+    class DummyPipelineModule:
+        class ParsingPipeline:  # pragma: no cover - shape only
+            pass
+
+    class DummyRootModule:
+        pipeline = DummyPipelineModule
+
+    def fake_import(name: str):
+        calls.append(name)
+        if name in {"rag_anything.pipeline", "raganything.pipeline", "rag_anything"}:
+            raise ModuleNotFoundError(name)
+        if name == "raganything":
+            return DummyRootModule
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr("app.parser.importlib.import_module", fake_import)
+
+    parsing_pipeline_cls = parser._load_rag_pipeline_class()
+    assert parsing_pipeline_cls is DummyPipelineModule.ParsingPipeline
+    assert calls == ["rag_anything.pipeline", "raganything.pipeline", "rag_anything", "raganything"]

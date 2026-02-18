@@ -36,9 +36,9 @@ class RAGAnythingParser:
     def _parse_with_rag_anything(self, path: Path) -> tuple[list[dict] | None, str]:
         try:
             # API shape may vary between revisions; defensive adapter.
-            rag_pipeline = self._load_rag_pipeline_module()
+            parsing_pipeline_cls = self._load_rag_pipeline_class()
 
-            parser = rag_pipeline.ParsingPipeline()
+            parser = parsing_pipeline_cls()
             result = parser.parse(str(path))
             if not isinstance(result, dict):
                 return None, f"unexpected_result_type:{type(result).__name__}"
@@ -56,18 +56,32 @@ class RAGAnythingParser:
 
 
     @staticmethod
-    def _load_rag_pipeline_module():
-        module_names = ("rag_anything.pipeline", "raganything.pipeline")
+    def _load_rag_pipeline_class():
+        module_names = ("rag_anything.pipeline", "raganything.pipeline", "rag_anything", "raganything")
         last_exc: Exception | None = None
+        attempted: list[str] = []
+
         for module_name in module_names:
+            attempted.append(module_name)
             try:
-                return importlib.import_module(module_name)
+                module = importlib.import_module(module_name)
             except Exception as exc:  # pragma: no cover - tested via failure path
                 last_exc = exc
+                continue
 
-        if last_exc is None:
-            raise ModuleNotFoundError("RAG-Anything pipeline module is unavailable")
-        raise last_exc
+            parsing_pipeline = getattr(module, "ParsingPipeline", None)
+            if parsing_pipeline is None:
+                pipeline_module = getattr(module, "pipeline", None)
+                parsing_pipeline = getattr(pipeline_module, "ParsingPipeline", None) if pipeline_module is not None else None
+
+            if parsing_pipeline is not None:
+                return parsing_pipeline
+
+        if last_exc is not None:
+            raise ModuleNotFoundError(
+                f"RAG-Anything ParsingPipeline not found. attempted={attempted}; last_error={type(last_exc).__name__}: {last_exc}"
+            ) from last_exc
+        raise ModuleNotFoundError(f"RAG-Anything ParsingPipeline not found. attempted={attempted}")
 
     def _normalize_elements(self, elements: list[dict]) -> list[ParsedElement]:
         normalized: list[ParsedElement] = []
