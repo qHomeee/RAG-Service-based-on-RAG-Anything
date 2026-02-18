@@ -285,5 +285,5 @@ curl -X POST http://localhost:8000/sources -H "Content-Type: application/json" -
 - MinerU + transformers incompatibility (`cache_position`): if logs show `UnimerMBartForCausalLM.forward() got an unexpected keyword argument 'cache_position'`, pin transformers to MinerU-compatible version and restart service:
   1. `pip install "transformers==4.35.0"`
   2. restart API process (`uvicorn`/systemd).
-- Embeddings dependency mismatch (`split_torch_state_dict_into_shards` / `huggingface_hub` / `accelerate`): run `scripts/repair_env.ps1` (PowerShell) to reinstall a compatible stack, then restart API.
-- Recommended compatible ML stack for this service: `transformers==4.35.0`, `accelerate>=0.24,<0.26`, `huggingface_hub>=0.19.4`, `sentence-transformers>=2.2,<3`, `safetensors`.
+- Embeddings dependency mismatch (`split_torch_state_dict_into_shards` / `huggingface_hub` / `accelerate`): run `scripts/repair_env.ps1` (PowerShell) to reinstall a compatible stack (`huggingface-hub<0.18`, `tokenizers==0.14.1`), then restart API.
+- Recommended compatible ML stack for this service: `transformers==4.35.0`, `huggingface-hub>=0.16.4,<0.18`, `tokenizers==0.14.1`, `sentence-transformers>=2.2`, `safetensors` (accelerate moved to optional `requirements-accelerate.txt`).

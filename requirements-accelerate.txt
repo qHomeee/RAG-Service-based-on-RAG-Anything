@@ -1,0 +1,4 @@
+# Optional: install only if you explicitly need accelerate.
+# Kept separate from core requirements to avoid huggingface_hub/tokenizers conflicts
+# with transformers==4.35.0 required by MinerU/Unimer.
+accelerate>=0.23,<0.24

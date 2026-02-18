@@ -27,7 +27,7 @@ class EmbeddingProvider:
         versions = {
             "transformers": _safe_version("transformers"),
             "accelerate": _safe_version("accelerate"),
-            "huggingface_hub": _safe_version("huggingface_hub"),
+            "huggingface_hub": _safe_version("huggingface-hub") or _safe_version("huggingface_hub"),
             "sentence_transformers": _safe_version("sentence-transformers"),
             "torch": _safe_version("torch"),
         }
@@ -50,7 +50,11 @@ class EmbeddingProvider:
                     extra={
                         **versions,
                         "symptom": "huggingface_hub/accelerate/transformers import incompatibility",
-                        "recommendation": 'pip install "transformers==4.35.0" "accelerate>=0.24,<0.26" "huggingface_hub>=0.19.4"',
+                        "recommendation": [
+                            "pip uninstall -y accelerate",
+                            'pip install --no-cache-dir "huggingface-hub>=0.16.4,<0.18" "tokenizers==0.14.1"',
+                            "pip install --no-cache-dir -r requirements.txt",
+                        ],
                     },
                 )
 
@@ -58,9 +62,8 @@ class EmbeddingProvider:
                 raise RuntimeError(
                     "Embedding provider failed to initialize in strict mode. "
                     f"versions={versions}. "
-                    "Recommended fix: pip uninstall -y accelerate huggingface_hub transformers && "
-                    "pip install \"transformers==4.35.0\" \"accelerate>=0.24,<0.26\" \"huggingface_hub>=0.19.4\" "
-                    "\"sentence-transformers>=2.2,<3\" safetensors"
+                    "Recommended fix: pip uninstall -y accelerate huggingface-hub transformers tokenizers && "
+                    "pip install --no-cache-dir -r requirements.txt. Optional accelerate: pip install -r requirements-accelerate.txt"
                 ) from exc
 
             logger.warning(

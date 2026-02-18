@@ -42,6 +42,6 @@ def test_embedding_provider_hard_fail_in_strict_mode(monkeypatch):
             EmbeddingProvider()
         text = str(exc_info.value)
         assert "Embedding provider failed to initialize in strict mode" in text
-        assert "transformers==4.35.0" in text
+        assert "requirements-accelerate.txt" in text
     finally:
         settings.fail_on_embedding_fallback = original
