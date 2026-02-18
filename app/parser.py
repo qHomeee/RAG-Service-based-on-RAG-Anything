@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import logging
 from pathlib import Path
 
@@ -35,7 +36,7 @@ class RAGAnythingParser:
     def _parse_with_rag_anything(self, path: Path) -> tuple[list[dict] | None, str]:
         try:
             # API shape may vary between revisions; defensive adapter.
-            from rag_anything import pipeline as rag_pipeline  # type: ignore
+            rag_pipeline = self._load_rag_pipeline_module()
 
             parser = rag_pipeline.ParsingPipeline()
             result = parser.parse(str(path))
@@ -52,6 +53,21 @@ class RAGAnythingParser:
                 extra={"path": str(path), "error_type": type(exc).__name__, "error": str(exc)},
             )
             return None, f"exception:{type(exc).__name__}"
+
+
+    @staticmethod
+    def _load_rag_pipeline_module():
+        module_names = ("rag_anything.pipeline", "raganything.pipeline")
+        last_exc: Exception | None = None
+        for module_name in module_names:
+            try:
+                return importlib.import_module(module_name)
+            except Exception as exc:  # pragma: no cover - tested via failure path
+                last_exc = exc
+
+        if last_exc is None:
+            raise ModuleNotFoundError("RAG-Anything pipeline module is unavailable")
+        raise last_exc
 
     def _normalize_elements(self, elements: list[dict]) -> list[ParsedElement]:
         normalized: list[ParsedElement] = []

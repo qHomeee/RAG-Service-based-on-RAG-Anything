@@ -34,3 +34,27 @@ def test_logs_warning_when_rag_anything_throws(tmp_path, caplog):
     assert elements is None
     assert reason.startswith("exception:")
     assert any("rag_anything_parse_failed" in rec.message for rec in caplog.records)
+
+
+def test_load_pipeline_module_supports_raganything_alias(monkeypatch):
+    parser = RAGAnythingParser()
+
+    calls = []
+
+    class DummyModule:
+        class ParsingPipeline:  # pragma: no cover - shape only
+            pass
+
+    def fake_import(name: str):
+        calls.append(name)
+        if name == "rag_anything.pipeline":
+            raise ModuleNotFoundError("legacy name unavailable")
+        if name == "raganything.pipeline":
+            return DummyModule
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr("app.parser.importlib.import_module", fake_import)
+
+    module = parser._load_rag_pipeline_module()
+    assert module is DummyModule
+    assert calls == ["rag_anything.pipeline", "raganything.pipeline"]
