@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import logging
 from pathlib import Path
+from typing import Any
 
 from app.schemas import ParsedElement
 from app.utils import normalize_text
@@ -54,10 +55,26 @@ class RAGAnythingParser:
             )
             return None, f"exception:{type(exc).__name__}"
 
-
     @staticmethod
     def _load_rag_pipeline_class():
-        module_names = ("rag_anything.pipeline", "raganything.pipeline", "rag_anything", "raganything")
+        module_names = (
+            "rag_anything.pipeline",
+            "raganything.pipeline",
+            "rag_anything.parser",
+            "raganything.parser",
+            "rag_anything.raganything",
+            "raganything.raganything",
+            "rag_anything",
+            "raganything",
+        )
+        class_names = (
+            "ParsingPipeline",
+            "RAGAnything",
+            "RagAnything",
+            "RAGAnythingParser",
+            "Parser",
+            "DocumentParser",
+        )
         last_exc: Exception | None = None
         attempted: list[str] = []
 
@@ -69,19 +86,15 @@ class RAGAnythingParser:
                 last_exc = exc
                 continue
 
-            parsing_pipeline = getattr(module, "ParsingPipeline", None)
-            if parsing_pipeline is None:
-                pipeline_module = getattr(module, "pipeline", None)
-                parsing_pipeline = getattr(pipeline_module, "ParsingPipeline", None) if pipeline_module is not None else None
-
-            if parsing_pipeline is not None:
-                return parsing_pipeline
+            pipeline_class = _resolve_pipeline_class(module, class_names)
+            if pipeline_class is not None:
+                return pipeline_class
 
         if last_exc is not None:
             raise ModuleNotFoundError(
-                f"RAG-Anything ParsingPipeline not found. attempted={attempted}; last_error={type(last_exc).__name__}: {last_exc}"
+                f"RAG-Anything parser entrypoint not found. attempted={attempted}; last_error={type(last_exc).__name__}: {last_exc}"
             ) from last_exc
-        raise ModuleNotFoundError(f"RAG-Anything ParsingPipeline not found. attempted={attempted}")
+        raise ModuleNotFoundError(f"RAG-Anything parser entrypoint not found. attempted={attempted}")
 
     def _normalize_elements(self, elements: list[dict]) -> list[ParsedElement]:
         normalized: list[ParsedElement] = []
@@ -130,3 +143,19 @@ class RAGAnythingParser:
             except Exception:
                 return []
         return []
+
+
+def _resolve_pipeline_class(module: Any, class_names: tuple[str, ...]):
+    for class_name in class_names:
+        candidate = getattr(module, class_name, None)
+        if isinstance(candidate, type):
+            return candidate
+
+    nested_pipeline = getattr(module, "pipeline", None)
+    if nested_pipeline is not None:
+        for class_name in class_names:
+            candidate = getattr(nested_pipeline, class_name, None)
+            if isinstance(candidate, type):
+                return candidate
+
+    return None

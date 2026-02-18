@@ -280,3 +280,4 @@ curl -X POST http://localhost:8000/sources -H "Content-Type: application/json" -
   2. `pip install "pypdf>=5.6.0,<6"`
   3. `pip install git+https://github.com/HKUDS/RAG-Anything.git`
 - For minimal text/PDF/docx ingestion, image-specific packages can be treated as optional if your deployment does not process image OCR/caption pipelines.
+- Newer releases may expose package name/layout as `raganything` (without underscore) and different internal modules; this service now auto-detects supported parser entrypoints across known layouts.

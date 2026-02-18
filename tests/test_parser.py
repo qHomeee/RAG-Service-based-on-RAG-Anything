@@ -84,4 +84,24 @@ def test_load_pipeline_class_supports_root_module_pipeline_attr(monkeypatch):
 
     parsing_pipeline_cls = parser._load_rag_pipeline_class()
     assert parsing_pipeline_cls is DummyPipelineModule.ParsingPipeline
-    assert calls == ["rag_anything.pipeline", "raganything.pipeline", "rag_anything", "raganything"]
+    assert calls == ["rag_anything.pipeline", "raganything.pipeline", "rag_anything.parser", "raganything.parser", "rag_anything.raganything", "raganything.raganything", "rag_anything", "raganything"]
+
+
+def test_load_pipeline_class_supports_parser_module_class(monkeypatch):
+    parser = RAGAnythingParser()
+
+    class DummyParserModule:
+        class DocumentParser:  # pragma: no cover - shape only
+            pass
+
+    def fake_import(name: str):
+        if name in {"rag_anything.pipeline", "raganything.pipeline", "rag_anything.parser"}:
+            raise ModuleNotFoundError(name)
+        if name == "raganything.parser":
+            return DummyParserModule
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr("app.parser.importlib.import_module", fake_import)
+
+    parsing_pipeline_cls = parser._load_rag_pipeline_class()
+    assert parsing_pipeline_cls is DummyParserModule.DocumentParser
