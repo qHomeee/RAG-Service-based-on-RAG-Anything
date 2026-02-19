@@ -47,11 +47,16 @@ def log_dependency_compatibility() -> None:
 
 @dataclass(frozen=True)
 class MineruCliCaps:
-    supports_json: bool
-    output_dir_flag: str | None
+    path_flag: str
+    output_dir_flag: str
     disable_image_flag: str | None
     disable_table_flag: str | None
     disable_equation_flag: str | None
+    mode_flag: str | None
+    formula_flag: str | None
+    table_flag: str | None
+    backend_flag: str | None
+    device_flag: str | None
 
 
 class RAGAnythingParser:
@@ -80,7 +85,7 @@ class RAGAnythingParser:
                 return elements, "ok"
             return None, reason
         except Exception as exc:
-            if _is_mineru_transformers_mismatch(exc):
+            if _should_retry_degraded(exc):
                 logger.error(
                     "dependency_mismatch",
                     extra={
@@ -92,7 +97,7 @@ class RAGAnythingParser:
                 )
                 logger.warning(
                     "parser_degraded_mode_used",
-                    extra={"path": str(path), "reason": "mineru_transformers_incompatible", "mode": "text_only_retry"},
+                    extra={"path": str(path), "reason": "mineru_error", "mode": "text_only_retry"},
                 )
                 try:
                     result = self._run_mineru_subprocess(path, text_only=True)
@@ -116,8 +121,10 @@ class RAGAnythingParser:
     def _run_mineru_subprocess(self, path: Path, *, text_only: bool) -> Any:
         caps = self._detect_mineru_cli_caps(settings.mineru_python)
         with tempfile.TemporaryDirectory(prefix="mineru_out_") as tmpdir:
-            out_dir = Path(tmpdir)
+            out_dir = Path(tmpdir).resolve()
             cmd = self._build_mineru_command(path=path, text_only=text_only, output_dir=out_dir, caps=caps)
+            logger.info("mineru_cmd", extra={"cmd": cmd})
+            logger.info("mineru_output_dir", extra={"path": str(out_dir)})
 
             proc = subprocess.run(
                 cmd,
@@ -132,52 +139,61 @@ class RAGAnythingParser:
             if proc.returncode != 0:
                 raise RuntimeError(f"mineru_returncode={proc.returncode}\ncmd={' '.join(cmd)}\nstdout={stdout}\nstderr={stderr}")
 
-            if caps.supports_json and stdout:
-                try:
-                    return json.loads(stdout)
-                except json.JSONDecodeError:
-                    logger.info("mineru_stdout_not_json", extra={"path": str(path)})
-
             return _read_mineru_output_dir(out_dir)
 
     @staticmethod
     @lru_cache(maxsize=4)
     def _detect_mineru_cli_caps(mineru_python: str) -> MineruCliCaps:
-        parse_help = _run_help_command([mineru_python, "-m", "mineru.cli.client", "parse_doc", "--help"])
         full_help = _run_help_command([mineru_python, "-m", "mineru.cli.client", "--help"])
-        combined = f"{parse_help}\n{full_help}".lower()
+        combined = full_help.lower()
 
-        output_flag = None
+        path_flag = "--path" if "--path" in combined else "-p"
+
         if "--output-dir" in combined:
             output_flag = "--output-dir"
-        elif "--output_dir" in combined:
-            output_flag = "--output_dir"
+        elif "--output" in combined:
+            output_flag = "--output"
+        else:
+            output_flag = "-o"
 
         return MineruCliCaps(
-            supports_json="--json" in combined,
+            path_flag=path_flag,
             output_dir_flag=output_flag,
             disable_image_flag="--disable-image" if "--disable-image" in combined else None,
             disable_table_flag="--disable-table" if "--disable-table" in combined else None,
             disable_equation_flag="--disable-equation" if "--disable-equation" in combined else None,
+            mode_flag="-m" if "-m" in combined else ("--mode" if "--mode" in combined else None),
+            formula_flag="-f" if "-f" in combined else ("--formula" if "--formula" in combined else None),
+            table_flag="-t" if "-t" in combined else ("--table" if "--table" in combined else None),
+            backend_flag="-b" if "-b" in combined else ("--backend" if "--backend" in combined else None),
+            device_flag="-d" if "-d" in combined else ("--device" if "--device" in combined else None),
         )
 
     @staticmethod
     def _build_mineru_command(*, path: Path, text_only: bool, output_dir: Path, caps: MineruCliCaps) -> list[str]:
+        path_abs = path.resolve()
+        output_abs = output_dir.resolve()
         cmd = [
             settings.mineru_python,
             "-m",
             "mineru.cli.client",
-            "parse_doc",
-            str(path),
+            caps.path_flag,
+            str(path_abs),
+            caps.output_dir_flag,
+            str(output_abs),
         ]
 
-        if caps.output_dir_flag:
-            cmd.extend([caps.output_dir_flag, str(output_dir)])
-
-        if caps.supports_json:
-            cmd.append("--json")
-
         if text_only:
+            if caps.mode_flag:
+                cmd.extend([caps.mode_flag, "txt"])
+            if caps.formula_flag:
+                cmd.extend([caps.formula_flag, "false"])
+            if caps.table_flag:
+                cmd.extend([caps.table_flag, "false"])
+            if caps.backend_flag:
+                cmd.extend([caps.backend_flag, "pipeline"])
+            if caps.device_flag:
+                cmd.extend([caps.device_flag, "cpu"])
             if caps.disable_image_flag:
                 cmd.append(caps.disable_image_flag)
             if caps.disable_table_flag:
@@ -294,6 +310,17 @@ def _is_mineru_transformers_mismatch(exc: Exception) -> bool:
     has_cache_position = "cache_position" in text
     has_unimer = "unimer" in text or "unimermbartforcausallm" in text
     return has_cache_position and has_unimer
+
+
+def _should_retry_degraded(exc: Exception) -> bool:
+    text = _extract_error_text(exc).lower()
+    return (
+        "mineru_returncode=" in text
+        or _is_mineru_transformers_mismatch(exc)
+        or "cache_position" in text
+        or "unimermbartforcausallm" in text
+        or "missing option" in text
+    )
 
 
 def _extract_elements(result: Any) -> tuple[list[dict] | None, str]:

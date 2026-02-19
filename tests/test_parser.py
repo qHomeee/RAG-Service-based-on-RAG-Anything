@@ -43,25 +43,28 @@ def test_logs_warning_when_mineru_throws(tmp_path, monkeypatch, caplog):
 
 def test_detect_cli_caps_without_json(monkeypatch):
     def fake_run(cmd, capture_output, text, timeout, check):
-        if "parse_doc" in cmd:
-            return _Proc(stdout="Usage: parse_doc [OPTIONS]\n  --output-dir TEXT\n  --disable-image\n")
-        return _Proc(stdout="Usage: client [COMMAND]\n")
+        return _Proc(stdout="Usage: client [OPTIONS]\n  -p, --path TEXT\n  -o, --output TEXT\n  -m TEXT\n  -f TEXT\n  -t TEXT\n")
 
     monkeypatch.setattr("app.parser.subprocess.run", fake_run)
     RAGAnythingParser._detect_mineru_cli_caps.cache_clear()
     caps = RAGAnythingParser._detect_mineru_cli_caps("python")
 
-    assert caps.supports_json is False
-    assert caps.output_dir_flag == "--output-dir"
+    assert caps.path_flag == "--path"
+    assert caps.output_dir_flag == "--output"
 
 
-def test_build_command_without_json_flag():
+def test_build_command_uses_required_flags_and_no_parse_doc():
     caps = MineruCliCaps(
-        supports_json=False,
-        output_dir_flag="--output-dir",
+        path_flag="-p",
+        output_dir_flag="-o",
         disable_image_flag="--disable-image",
         disable_table_flag=None,
         disable_equation_flag=None,
+        mode_flag="-m",
+        formula_flag="-f",
+        table_flag="-t",
+        backend_flag="-b",
+        device_flag="-d",
     )
     cmd = RAGAnythingParser._build_mineru_command(
         path=Path("a.pdf"),
@@ -69,9 +72,13 @@ def test_build_command_without_json_flag():
         output_dir=Path("out"),
         caps=caps,
     )
-    assert "--json" not in cmd
-    assert "--output-dir" in cmd
+    assert "parse_doc" not in cmd
+    assert "-p" in cmd
+    assert "-o" in cmd
     assert "--disable-image" in cmd
+    assert "-m" in cmd and "txt" in cmd
+    assert "-f" in cmd and "false" in cmd
+    assert "-t" in cmd and "false" in cmd
 
 
 def test_mineru_subprocess_reads_output_dir_artifacts(tmp_path, monkeypatch):
@@ -80,16 +87,21 @@ def test_mineru_subprocess_reads_output_dir_artifacts(tmp_path, monkeypatch):
     sample.write_bytes(b"%PDF-1.4")
 
     caps = MineruCliCaps(
-        supports_json=False,
-        output_dir_flag="--output-dir",
+        path_flag="-p",
+        output_dir_flag="-o",
         disable_image_flag=None,
         disable_table_flag=None,
         disable_equation_flag=None,
+        mode_flag=None,
+        formula_flag=None,
+        table_flag=None,
+        backend_flag=None,
+        device_flag=None,
     )
     monkeypatch.setattr(parser, "_detect_mineru_cli_caps", lambda _python: caps)
 
     def fake_run(cmd, capture_output, text, timeout, check):
-        out_dir = Path(cmd[cmd.index("--output-dir") + 1])
+        out_dir = Path(cmd[cmd.index("-o") + 1])
         (out_dir / "result.json").write_text('{"elements":[{"type":"text","text":"ok"}]}', encoding="utf-8")
         return _Proc(returncode=0, stdout="")
 
@@ -121,6 +133,26 @@ def test_dependency_mismatch_retries_text_only(tmp_path, monkeypatch, caplog):
     assert elements == [{"type": "text", "text": "retry ok"}]
     assert any("dependency_mismatch" in rec.message for rec in caplog.records)
     assert any("parser_degraded_mode_used" in rec.message for rec in caplog.records)
+
+
+def test_nonzero_returncode_retries_once(tmp_path, monkeypatch):
+    parser = RAGAnythingParser()
+    sample = tmp_path / "sample.txt"
+    sample.write_text("hello", encoding="utf-8")
+
+    calls: list[bool] = []
+
+    def fake_run(path, *, text_only: bool):
+        calls.append(text_only)
+        if len(calls) == 1:
+            raise RuntimeError("mineru_returncode=2\nstderr=boom")
+        return {"elements": [{"type": "text", "text": "retry ok"}]}
+
+    monkeypatch.setattr(parser, "_run_mineru_subprocess", fake_run)
+    elements, reason = parser._parse_with_mineru(sample)
+    assert calls == [False, True]
+    assert reason == "ok_text_only_retry"
+    assert elements == [{"type": "text", "text": "retry ok"}]
 
 
 def test_dependency_compatibility_logs_mismatch(monkeypatch, caplog):
