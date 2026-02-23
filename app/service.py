@@ -25,7 +25,7 @@ class RagService:
         fallback_docs = 0
         for file_path in files:
             source_uri = str(file_path.relative_to(root)).replace("\\", "/")
-            parsed, parse_mode = self.parser.parse_file_with_mode(source_uri=source_uri, path=file_path)
+            parsed, parse_mode = self.parser.parse_file_with_mode(source_uri=source_uri, path=file_path, reindex=reindex)
             if parse_mode == "fallback":
                 fallback_docs += 1
 

@@ -38,7 +38,7 @@ def test_ingest_pipeline_uses_mineru_subprocess_output(tmp_path, monkeypatch):
 
     parser = RAGAnythingParser()
 
-    def fake_run_mineru(path: Path, *, text_only: bool):
+    def fake_run_mineru(path: Path, *, text_only: bool, reindex: bool = False):
         assert text_only is False
         return {"elements": [{"type": "text", "text": "Заголовок\n\nТекст документа", "page": 1}]}
 

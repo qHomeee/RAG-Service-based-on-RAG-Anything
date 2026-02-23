@@ -2,6 +2,7 @@ from pathlib import Path
 
 from app.parser import MineruCliCaps, RAGAnythingParser, log_dependency_compatibility
 from app.schemas import ParsedElement
+from app.config import settings
 
 
 class _Proc:
@@ -99,6 +100,7 @@ def test_mineru_subprocess_reads_output_dir_artifacts_recursively(tmp_path, monk
         device_flag=None,
     )
     monkeypatch.setattr(parser, "_detect_mineru_cli_caps", lambda _python: caps)
+    monkeypatch.setattr(settings, "storage_parsed", str(tmp_path / "parsed"))
 
     def fake_run(cmd, capture_output, text, timeout, check):
         out_dir = Path(cmd[cmd.index("-o") + 1])
@@ -108,7 +110,7 @@ def test_mineru_subprocess_reads_output_dir_artifacts_recursively(tmp_path, monk
         return _Proc(returncode=0, stdout="done", stderr="")
 
     monkeypatch.setattr("app.parser.subprocess.run", fake_run)
-    data = parser._run_mineru_subprocess(sample, text_only=False)
+    data = parser._run_mineru_subprocess(sample, text_only=False, reindex=True)
     assert data["elements"][0]["text"] == "ok"
 
 
@@ -119,7 +121,7 @@ def test_dependency_mismatch_retries_text_only(tmp_path, monkeypatch, caplog):
 
     calls: list[bool] = []
 
-    def fake_run(path, *, text_only: bool):
+    def fake_run(path, *, text_only: bool, reindex: bool = False):
         calls.append(text_only)
         if not text_only:
             raise RuntimeError("UnimerMBartForCausalLM.forward() got an unexpected keyword argument 'cache_position'")
@@ -144,7 +146,7 @@ def test_nonzero_returncode_retries_once(tmp_path, monkeypatch):
 
     calls: list[bool] = []
 
-    def fake_run(path, *, text_only: bool):
+    def fake_run(path, *, text_only: bool, reindex: bool = False):
         calls.append(text_only)
         if len(calls) == 1:
             raise RuntimeError("mineru_returncode=2\nstderr=boom")
@@ -174,3 +176,23 @@ def test_dependency_compatibility_logs_mismatch(monkeypatch, caplog):
         log_dependency_compatibility()
 
     assert any("dependency_mismatch" in rec.message for rec in caplog.records)
+
+
+def test_mineru_uses_cached_output_when_not_reindex(tmp_path, monkeypatch):
+    parser = RAGAnythingParser()
+    sample = tmp_path / "sample.pdf"
+    sample.write_bytes(b"%PDF-1.4")
+
+    parsed_root = tmp_path / "parsed"
+    monkeypatch.setattr(settings, "storage_parsed", str(parsed_root))
+    out_dir = parsed_root / sample.stem / "subdir"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "result.md").write_text("cached markdown", encoding="utf-8")
+
+    def fail_run(*_args, **_kwargs):
+        raise AssertionError("subprocess must not run when cached artifacts exist")
+
+    monkeypatch.setattr("app.parser.subprocess.run", fail_run)
+
+    data = parser._run_mineru_subprocess(sample, text_only=False, reindex=False)
+    assert data["elements"][0]["text"] == "cached markdown"

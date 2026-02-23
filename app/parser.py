@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
-import tempfile
+import shutil
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib import metadata
@@ -62,12 +62,12 @@ class MineruCliCaps:
 class RAGAnythingParser:
     """Parser adapter that executes MinerU in a separate python environment via subprocess."""
 
-    def parse_file(self, source_uri: str, path: Path) -> list[ParsedElement]:
-        elements, _ = self.parse_file_with_mode(source_uri, path)
+    def parse_file(self, source_uri: str, path: Path, reindex: bool = False) -> list[ParsedElement]:
+        elements, _ = self.parse_file_with_mode(source_uri, path, reindex=reindex)
         return elements
 
-    def parse_file_with_mode(self, source_uri: str, path: Path) -> tuple[list[ParsedElement], str]:
-        rag_elements, reason = self._parse_with_mineru(path)
+    def parse_file_with_mode(self, source_uri: str, path: Path, reindex: bool = False) -> tuple[list[ParsedElement], str]:
+        rag_elements, reason = self._parse_with_mineru(path, reindex=reindex)
         if rag_elements:
             return self._normalize_elements(rag_elements), "rag_anything"
 
@@ -77,9 +77,9 @@ class RAGAnythingParser:
         )
         return self._fallback_parse(path), "fallback"
 
-    def _parse_with_mineru(self, path: Path) -> tuple[list[dict] | None, str]:
+    def _parse_with_mineru(self, path: Path, reindex: bool = False) -> tuple[list[dict] | None, str]:
         try:
-            result = self._run_mineru_subprocess(path, text_only=False)
+            result = self._run_mineru_subprocess(path, text_only=False, reindex=reindex)
             elements, reason = _extract_elements(result)
             if elements:
                 return elements, "ok"
@@ -100,7 +100,7 @@ class RAGAnythingParser:
                     extra={"path": str(path), "reason": "mineru_error", "mode": "text_only_retry"},
                 )
                 try:
-                    result = self._run_mineru_subprocess(path, text_only=True)
+                    result = self._run_mineru_subprocess(path, text_only=True, reindex=reindex)
                     elements, reason = _extract_elements(result)
                     if elements:
                         return elements, "ok_text_only_retry"
@@ -118,54 +118,96 @@ class RAGAnythingParser:
             )
             return None, f"exception:{type(exc).__name__}"
 
-    def _run_mineru_subprocess(self, path: Path, *, text_only: bool) -> Any:
+    def _run_mineru_subprocess(self, path: Path, *, text_only: bool, reindex: bool = False) -> Any:
         caps = self._detect_mineru_cli_caps(settings.mineru_python)
-        with tempfile.TemporaryDirectory(prefix="mineru_out_") as tmpdir:
-            out_dir = Path(tmpdir).resolve()
-            cmd = self._build_mineru_command(path=path, text_only=text_only, output_dir=out_dir, caps=caps)
-            logger.info("mineru_cmd", extra={"cmd": cmd})
-            logger.info("mineru_output_dir", extra={"path": str(out_dir)})
-
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=settings.mineru_timeout_seconds,
-                check=False,
-            )
-
-            stdout = (proc.stdout or "").strip()
-            stderr = (proc.stderr or "").strip()
-            logger.info(
-                "mineru_run_result",
-                extra={
-                    "path": str(path),
-                    "returncode": proc.returncode,
-                    "stdout_tail": stdout[-2000:],
-                    "stderr_tail": stderr[-2000:],
-                },
-            )
-            if proc.returncode != 0:
-                raise RuntimeError(f"mineru_returncode={proc.returncode}\ncmd={' '.join(cmd)}\nstdout={stdout}\nstderr={stderr}")
-
-            output_files = _collect_output_files(out_dir)
-            if not output_files:
-                logger.warning(
-                    "mineru_output_empty",
-                    extra={"path": str(path), "output_dir": str(out_dir)},
-                )
-                raise RuntimeError(f"mineru_output_empty:{out_dir}")
-
+        output_dir, use_cached = self._prepare_output_dir(path, reindex=reindex)
+        if use_cached:
+            files = _collect_output_files(output_dir)
             logger.info(
                 "mineru_output_files",
                 extra={
                     "path": str(path),
-                    "output_dir": str(out_dir),
-                    "count": len(output_files),
-                    "files": [str(file.relative_to(out_dir)) for file in output_files[:20]],
+                    "output_dir": str(output_dir),
+                    "count": len(files),
+                    "files": [str(file.relative_to(output_dir)) for file in files[:30]],
+                    "cached": True,
                 },
             )
-            return _read_mineru_output_dir(out_dir, output_files)
+            return _read_mineru_output_dir(output_dir, files)
+
+        cmd = self._build_mineru_command(path=path, text_only=text_only, output_dir=output_dir, caps=caps)
+        return self._execute_mineru_command(path=path, output_dir=output_dir, cmd=cmd)
+
+    def _prepare_output_dir(self, path: Path, *, reindex: bool) -> tuple[Path, bool]:
+        output_dir = Path(settings.storage_parsed).resolve() / _doc_dir_name(path)
+        has_artifacts = output_dir.exists() and bool(_collect_output_files(output_dir))
+
+        if reindex and output_dir.exists():
+            shutil.rmtree(output_dir, ignore_errors=True)
+            has_artifacts = False
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        if has_artifacts and not reindex:
+            logger.info(
+                "mineru_cached_output_used",
+                extra={"path": str(path), "output_dir": str(output_dir)},
+            )
+            return output_dir, True
+        return output_dir, False
+
+    def _execute_mineru_command(self, *, path: Path, output_dir: Path, cmd: list[str]) -> Any:
+        logger.info("mineru_cmd", extra={"cmd": cmd})
+        logger.info("mineru_output_dir", extra={"path": str(output_dir)})
+
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=settings.mineru_timeout_seconds,
+            check=False,
+        )
+
+        stdout = (proc.stdout or "").strip()
+        stderr = (proc.stderr or "").strip()
+        logger.info("mineru_returncode", extra={"path": str(path), "returncode": proc.returncode})
+        logger.info("mineru_stdout_tail", extra={"path": str(path), "stdout_tail": stdout[-4000:]})
+        logger.info("mineru_stderr_tail", extra={"path": str(path), "stderr_tail": stderr[-4000:]})
+        if proc.returncode != 0:
+            logger.error(
+                "mineru_execution_error",
+                extra={
+                    "path": str(path),
+                    "returncode": proc.returncode,
+                    "cmd": cmd,
+                    "stderr_excerpt": stderr[-4000:],
+                },
+            )
+            raise RuntimeError(f"mineru_returncode={proc.returncode}\ncmd={' '.join(cmd)}\nstdout={stdout}\nstderr={stderr}")
+
+        output_files = _collect_output_files(output_dir)
+        if not output_files:
+            logger.warning(
+                "mineru_output_empty",
+                extra={
+                    "path": str(path),
+                    "output_dir": str(output_dir),
+                    "stdout_tail": stdout[-4000:],
+                    "stderr_tail": stderr[-4000:],
+                },
+            )
+            raise RuntimeError(f"mineru_output_empty:{output_dir}")
+
+        logger.info(
+            "mineru_output_files",
+            extra={
+                "path": str(path),
+                "output_dir": str(output_dir),
+                "count": len(output_files),
+                "files": [str(file.relative_to(output_dir)) for file in output_files[:30]],
+            },
+        )
+        return _read_mineru_output_dir(output_dir, output_files)
 
     @staticmethod
     @lru_cache(maxsize=4)
@@ -209,6 +251,11 @@ class RAGAnythingParser:
             str(output_abs),
         ]
 
+        if caps.backend_flag:
+            cmd.extend([caps.backend_flag, "pipeline"])
+        if caps.device_flag:
+            cmd.extend([caps.device_flag, "cpu"])
+
         if text_only:
             if caps.mode_flag:
                 cmd.extend([caps.mode_flag, "txt"])
@@ -216,10 +263,6 @@ class RAGAnythingParser:
                 cmd.extend([caps.formula_flag, "false"])
             if caps.table_flag:
                 cmd.extend([caps.table_flag, "false"])
-            if caps.backend_flag:
-                cmd.extend([caps.backend_flag, "pipeline"])
-            if caps.device_flag:
-                cmd.extend([caps.device_flag, "cpu"])
             if caps.disable_image_flag:
                 cmd.append(caps.disable_image_flag)
             if caps.disable_table_flag:
@@ -277,6 +320,10 @@ class RAGAnythingParser:
                 return []
         return []
 
+
+
+def _doc_dir_name(path: Path) -> str:
+    return path.stem
 
 def _run_help_command(cmd: list[str]) -> str:
     try:

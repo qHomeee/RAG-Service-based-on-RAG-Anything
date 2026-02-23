@@ -54,6 +54,7 @@ FAIL_ON_EMBEDDING_FALLBACK=true
 API_KEY=super-secret-key
 ADMIN_API_KEY=super-admin-secret-key
 STORAGE_RAW=storage/raw
+STORAGE_PARSED=storage/parsed
 REDIS_URL=
 APP_ENV=production
 INGEST_PATH_MUST_BE_UNDER_STORAGE_RAW=true
@@ -103,6 +104,10 @@ You can also run:
 .\scripts\setup_mineru.ps1
 .\scripts\doctor.ps1
 ```
+
+
+- MinerU artifacts are stored in deterministic directories under `STORAGE_PARSED/<doc_id>` (derived from file name), not temp folders.
+- With `reindex=false`, existing artifacts in `STORAGE_PARSED` are reused; with `reindex=true`, the directory is recreated before parsing.
 
 ## Run parser only (without API)
 

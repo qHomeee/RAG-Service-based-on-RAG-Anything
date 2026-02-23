@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     api_key: str = "change-me"
     admin_api_key: str = "change-me-admin"
     storage_raw: str = "storage/raw"
+    storage_parsed: str = "storage/parsed"
     redis_url: str | None = None
 
     max_file_size_mb: int = 50
