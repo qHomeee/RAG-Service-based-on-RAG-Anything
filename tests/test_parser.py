@@ -81,7 +81,7 @@ def test_build_command_uses_required_flags_and_no_parse_doc():
     assert "-t" in cmd and "false" in cmd
 
 
-def test_mineru_subprocess_reads_output_dir_artifacts(tmp_path, monkeypatch):
+def test_mineru_subprocess_reads_output_dir_artifacts_recursively(tmp_path, monkeypatch):
     parser = RAGAnythingParser()
     sample = tmp_path / "sample.pdf"
     sample.write_bytes(b"%PDF-1.4")
@@ -102,8 +102,10 @@ def test_mineru_subprocess_reads_output_dir_artifacts(tmp_path, monkeypatch):
 
     def fake_run(cmd, capture_output, text, timeout, check):
         out_dir = Path(cmd[cmd.index("-o") + 1])
-        (out_dir / "result.json").write_text('{"elements":[{"type":"text","text":"ok"}]}', encoding="utf-8")
-        return _Proc(returncode=0, stdout="")
+        nested = out_dir / "nested" / "level"
+        nested.mkdir(parents=True, exist_ok=True)
+        (nested / "result.json").write_text('{"elements":[{"type":"text","text":"ok"}]}', encoding="utf-8")
+        return _Proc(returncode=0, stdout="done", stderr="")
 
     monkeypatch.setattr("app.parser.subprocess.run", fake_run)
     data = parser._run_mineru_subprocess(sample, text_only=False)

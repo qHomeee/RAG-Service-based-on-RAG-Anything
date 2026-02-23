@@ -136,10 +136,36 @@ class RAGAnythingParser:
 
             stdout = (proc.stdout or "").strip()
             stderr = (proc.stderr or "").strip()
+            logger.info(
+                "mineru_run_result",
+                extra={
+                    "path": str(path),
+                    "returncode": proc.returncode,
+                    "stdout_tail": stdout[-2000:],
+                    "stderr_tail": stderr[-2000:],
+                },
+            )
             if proc.returncode != 0:
                 raise RuntimeError(f"mineru_returncode={proc.returncode}\ncmd={' '.join(cmd)}\nstdout={stdout}\nstderr={stderr}")
 
-            return _read_mineru_output_dir(out_dir)
+            output_files = _collect_output_files(out_dir)
+            if not output_files:
+                logger.warning(
+                    "mineru_output_empty",
+                    extra={"path": str(path), "output_dir": str(out_dir)},
+                )
+                raise RuntimeError(f"mineru_output_empty:{out_dir}")
+
+            logger.info(
+                "mineru_output_files",
+                extra={
+                    "path": str(path),
+                    "output_dir": str(out_dir),
+                    "count": len(output_files),
+                    "files": [str(file.relative_to(out_dir)) for file in output_files[:20]],
+                },
+            )
+            return _read_mineru_output_dir(out_dir, output_files)
 
     @staticmethod
     @lru_cache(maxsize=4)
@@ -260,21 +286,28 @@ def _run_help_command(cmd: list[str]) -> str:
     return f"{proc.stdout or ''}\n{proc.stderr or ''}"
 
 
-def _read_mineru_output_dir(output_dir: Path) -> Any:
-    json_candidates = sorted(output_dir.rglob("*.json"))
-    for candidate in json_candidates:
+def _collect_output_files(output_dir: Path) -> list[Path]:
+    return sorted([p for p in output_dir.rglob("*") if p.is_file()])
+
+
+def _read_mineru_output_dir(output_dir: Path, files: list[Path] | None = None) -> Any:
+    candidates = files if files is not None else _collect_output_files(output_dir)
+
+    def _by_suffix(suffix: str) -> list[Path]:
+        return [p for p in candidates if p.suffix.lower() == suffix]
+
+    for candidate in _by_suffix(".json"):
         try:
             return json.loads(candidate.read_text(encoding="utf-8", errors="ignore"))
         except Exception:
             continue
 
-    text_candidates = sorted([*output_dir.rglob("*.md"), *output_dir.rglob("*.txt")])
-    for candidate in text_candidates:
+    for candidate in _by_suffix(".md") + _by_suffix(".txt"):
         text = candidate.read_text(encoding="utf-8", errors="ignore").strip()
         if text:
             return {"elements": [{"type": "text", "text": text}]}
 
-    raise RuntimeError(f"mineru_output_not_found:{output_dir}")
+    raise RuntimeError(f"mineru_output_artifact_not_found:{output_dir}")
 
 
 def _safe_version(pkg: str) -> str | None:
