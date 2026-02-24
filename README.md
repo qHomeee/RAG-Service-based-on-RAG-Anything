@@ -61,6 +61,7 @@ INGEST_PATH_MUST_BE_UNDER_STORAGE_RAW=true
 RATE_LIMIT_PER_MINUTE=120
 UVICORN_WORKERS=2
 AUTO_INSTALL_MINERU_DEPS=false
+DISABLE_MINERU_LLM=1
 ```
 
 ## Run with Docker Postgres
@@ -338,7 +339,8 @@ curl -X POST http://localhost:8000/sources -H "Content-Type: application/json" -
 - MinerU CLI flags vary by version; service auto-detects supported options via `--help` and reads parsing artifacts from `output_dir` when `--json` is unavailable.
 - MinerU readiness is checked only when parsing PDF, not during FastAPI startup. If `.venv-mineru` is missing/broken, API returns `503` with remediation (`pip install -r requirements-mineru.txt` in `.venv-mineru`).
 - During MinerU execution, `ModuleNotFoundError` is auto-detected from stderr and logged as `mineru_missing_dependency_detected` with module→package hints (for example `doclayout_yolo -> doclayout-yolo`, `fast_langdetect -> fast-langdetect`, `ultralytics -> ultralytics`, `rapid_table -> rapid-table`).
-- Production does not auto-install missing MinerU deps. Optional dev-only behavior can be enabled with `AUTO_INSTALL_MINERU_DEPS=true` to attempt one `pip install` + one retry. If doctor reports missing deps, parser transparently degrades to `fallback_text_parser`.
+- Production does not auto-install missing MinerU deps. Optional dev-only behavior can be enabled with `AUTO_INSTALL_MINERU_DEPS=true` to attempt one `pip install` + one retry.
+- LLM-aided title enhancement is disabled by default (`DISABLE_MINERU_LLM=1`) and falls back to identity title function, so `openai` package is not required for MinerU pipeline execution.
 - MinerU run success is validated by return code, stderr patterns (`Traceback`, `ModuleNotFoundError`, `ERROR`), and non-empty recursive artifacts; failures trigger one text-only retry before fallback.
 - MinerU + transformers incompatibility (`cache_position`): if logs show `UnimerMBartForCausalLM.forward() got an unexpected keyword argument 'cache_position'`, pin transformers to MinerU-compatible version and restart service:
   1. `pip install "transformers==4.35.0"`

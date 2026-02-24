@@ -57,7 +57,7 @@ def build_mineru_command(mineru_python: Path, pdf_path: Path, output_dir: Path, 
     cmd = [
         str(mineru_python),
         "-m",
-        "mineru.cli.client",
+        "app.mineru_offline_cli",
         "--path",
         str(pdf_path.resolve()),
         "--output",
