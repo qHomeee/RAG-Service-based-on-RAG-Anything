@@ -94,7 +94,16 @@ pip install -r requirements-mineru.txt
 # pip install -r requirements-mineru.txt -c constraints-mineru.txt
 ```
 
-`requirements-mineru.txt` intentionally contains runtime-critical dependencies (`mineru`, `torch`, `ultralytics`, `doclayout-yolo`, `rapid-table`, `fast-langdetect`) so `.venv-mineru` is self-sufficient.
+`requirements-mineru.txt` intentionally contains runtime-critical dependencies (`mineru`, `torch`, `transformers`, `ultralytics`, `doclayout-yolo`, `rapid-table`, `fast-langdetect`) so `.venv-mineru` is self-sufficient.
+
+
+Ubuntu / VPS setup for MinerU venv:
+
+```bash
+python3 -m venv .venv-mineru
+./.venv-mineru/bin/pip install -U pip
+./.venv-mineru/bin/pip install -r requirements-mineru.txt
+```
 
 Point service to MinerU python:
 
@@ -327,7 +336,7 @@ curl -X POST http://localhost:8000/sources -H "Content-Type: application/json" -
 - Newer releases may expose package name/layout as `raganything` (without underscore) and different internal modules; this service now auto-detects supported parser entrypoints across known layouts.
 - MinerU now runs via a separate python process (`MINERU_PYTHON`) so core dependencies remain conflict-free.
 - MinerU CLI flags vary by version; service auto-detects supported options via `--help` and reads parsing artifacts from `output_dir` when `--json` is unavailable.
-- Startup runs `mineru_doctor` (`torch`, `ultralytics`, `doclayout_yolo`, `rapid_table`, `fast_langdetect`, plus HF stack) via `MINERU_PYTHON`; missing modules are logged as `mineru_missing_dependency` with remediation `pip install -r requirements-mineru.txt`.
+- MinerU readiness is checked only when parsing PDF, not during FastAPI startup. If `.venv-mineru` is missing/broken, API returns `503` with remediation (`pip install -r requirements-mineru.txt` in `.venv-mineru`).
 - During MinerU execution, `ModuleNotFoundError` is auto-detected from stderr and logged as `mineru_missing_dependency_detected` with module→package hints (for example `doclayout_yolo -> doclayout-yolo`, `fast_langdetect -> fast-langdetect`, `ultralytics -> ultralytics`, `rapid_table -> rapid-table`).
 - Production does not auto-install missing MinerU deps. Optional dev-only behavior can be enabled with `AUTO_INSTALL_MINERU_DEPS=true` to attempt one `pip install` + one retry. If doctor reports missing deps, parser transparently degrades to `fallback_text_parser`.
 - MinerU run success is validated by return code, stderr patterns (`Traceback`, `ModuleNotFoundError`, `ERROR`), and non-empty recursive artifacts; failures trigger one text-only retry before fallback.

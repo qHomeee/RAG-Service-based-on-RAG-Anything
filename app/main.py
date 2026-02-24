@@ -15,7 +15,7 @@ from app.db import SessionLocal, engine
 from app.embeddings import EmbeddingProvider
 from app.models import Base
 from app.observability import slo_metrics
-from app.parser import RAGAnythingParser, mineru_doctor, log_dependency_compatibility
+from app.parser import RAGAnythingParser, log_dependency_compatibility
 from app.repository import RagRepository
 from app.reranker import CrossEncoderReranker
 from app.schemas import (
@@ -29,6 +29,7 @@ from app.schemas import (
     SourcesResponse,
 )
 from app.security import require_rate_limit
+from app.mineru_runner import MineruUnavailableError
 from app.service import RagService
 
 
@@ -88,17 +89,6 @@ def _validate_ingest_path(input_path: str) -> None:
 async def lifespan(app: FastAPI):
     _validate_secure_settings()
     log_dependency_compatibility()
-    runtime = mineru_doctor(settings.mineru_python)
-    if not runtime.get("ok"):
-        logger.warning(
-            "dependency_mismatch",
-            extra={
-                "component": "mineru_runtime",
-                "missing": runtime.get("missing", []),
-                "how_to_fix": runtime.get("how_to_fix", "pip install -r requirements-mineru.txt"),
-                "degrade_policy": "fallback_text_parser",
-            },
-        )
     Base.metadata.create_all(bind=engine)
     app.state.parser = RAGAnythingParser()
     app.state.embeddings = EmbeddingProvider()
@@ -132,6 +122,12 @@ def get_service(request: Request, db: Session = Depends(get_db)) -> RagService:
 @app.exception_handler(HTTPException)
 async def http_exc_handler(_: Request, exc: HTTPException) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content={"error": exc.detail})
+
+
+
+@app.exception_handler(MineruUnavailableError)
+async def mineru_unavailable_handler(_: Request, exc: MineruUnavailableError) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"error": str(exc)})
 
 
 @app.exception_handler(SQLAlchemyError)

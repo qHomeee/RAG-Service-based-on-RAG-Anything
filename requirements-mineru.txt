@@ -1,5 +1,6 @@
 mineru==2.0.6
 torch
+transformers
 ultralytics
 doclayout-yolo
 rapid-table

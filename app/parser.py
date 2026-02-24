@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
+from app.mineru_runner import MineruRunError, MineruUnavailableError, check_mineru_ready, extract_missing_module, resolve_mineru_python, run_mineru
 from app.schemas import ParsedElement
 from app.utils import normalize_text
 
@@ -169,6 +170,9 @@ class RAGAnythingParser:
         return elements
 
     def parse_file_with_mode(self, source_uri: str, path: Path, reindex: bool = False) -> tuple[list[ParsedElement], str]:
+        if path.suffix.lower() != ".pdf":
+            return self._fallback_parse(path), "fallback"
+
         rag_elements, reason = self._parse_with_mineru(path, reindex=reindex)
         if rag_elements:
             return self._normalize_elements(rag_elements), "rag_anything"
@@ -180,14 +184,12 @@ class RAGAnythingParser:
         return self._fallback_parse(path), "fallback"
 
     def _parse_with_mineru(self, path: Path, reindex: bool = False) -> tuple[list[dict] | None, str]:
-        doctor = mineru_doctor(settings.mineru_python)
-        if not doctor.get("ok", False):
-            missing = doctor.get("missing", [])
-            logger.warning(
-                "parser_degraded_mode_used",
-                extra={"path": str(path), "mode": "fallback_text_parser", "missing": missing},
+        mineru_py = resolve_mineru_python()
+        ok, detail = check_mineru_ready(mineru_py)
+        if not ok:
+            raise MineruUnavailableError(
+                "MinerU runtime is not ready. Install dependencies in .venv-mineru: pip install -r requirements-mineru.txt"
             )
-            return None, "mineru_doctor_missing_deps"
 
         try:
             result = self._run_mineru_subprocess(path, text_only=False, reindex=reindex)
@@ -197,15 +199,6 @@ class RAGAnythingParser:
             return None, reason
         except Exception as exc:
             if _should_retry_degraded(exc):
-                logger.error(
-                    "dependency_mismatch",
-                    extra={
-                        "component": "mineru",
-                        "path": str(path),
-                        "symptom": "cache_position / UnimerMBartForCausalLM incompatibility",
-                        "recommendation": 'pip install "transformers==4.35.0" in core and keep MinerU in separate venv',
-                    },
-                )
                 logger.warning(
                     "parser_degraded_mode_used",
                     extra={"path": str(path), "reason": "mineru_error", "mode": "text_only_retry"},
@@ -230,7 +223,6 @@ class RAGAnythingParser:
             return None, f"exception:{type(exc).__name__}"
 
     def _run_mineru_subprocess(self, path: Path, *, text_only: bool, reindex: bool = False) -> Any:
-        caps = self._detect_mineru_cli_caps(settings.mineru_python)
         output_dir, use_cached = self._prepare_output_dir(path, reindex=reindex)
         if use_cached:
             files = _collect_output_files(output_dir)
@@ -246,8 +238,27 @@ class RAGAnythingParser:
             )
             return _read_mineru_output_dir(output_dir, files)
 
-        cmd = self._build_mineru_command(path=path, text_only=text_only, output_dir=output_dir, caps=caps)
-        return self._execute_mineru_command(path=path, output_dir=output_dir, cmd=cmd)
+        mineru_py = resolve_mineru_python()
+        result = run_mineru(mineru_py, path, output_dir, timeout_s=settings.mineru_timeout_seconds, text_only=text_only)
+        stderr = result.stderr
+        missing_module = extract_missing_module(stderr)
+        if missing_module:
+            logger.error(
+                "mineru_missing_dependency_detected",
+                extra={
+                    "missing_module": missing_module,
+                    "suggested_package": _module_to_package(missing_module),
+                    "how_to_fix": "add dependency to requirements-mineru.txt and reinstall .venv-mineru",
+                },
+            )
+        files = _collect_output_files(output_dir)
+        if not is_mineru_output_valid(output_dir):
+            logger.warning(
+                "mineru_output_empty",
+                extra={"path": str(path), "output_dir": str(output_dir)},
+            )
+            raise MineruRunError(f"mineru_output_empty:{output_dir}")
+        return _read_mineru_output_dir(output_dir, files)
 
     def _prepare_output_dir(self, path: Path, *, reindex: bool) -> tuple[Path, bool]:
         output_dir = Path(settings.storage_parsed).resolve() / _doc_dir_name(path)
@@ -266,10 +277,6 @@ class RAGAnythingParser:
             )
             return output_dir, True
         return output_dir, False
-
-    def _execute_mineru_command(self, *, path: Path, output_dir: Path, cmd: list[str]) -> Any:
-        output_files = mineru_run_and_validate(cmd=cmd, output_dir=output_dir, source_path=path)
-        return _read_mineru_output_dir(output_dir, output_files)
 
     @staticmethod
     @lru_cache(maxsize=4)

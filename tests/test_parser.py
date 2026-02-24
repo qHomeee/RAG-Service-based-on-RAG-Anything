@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from app.parser import MineruCliCaps, RAGAnythingParser, mineru_doctor, check_mineru_runtime, log_dependency_compatibility, mineru_run_and_validate, _module_to_package
+from app.parser import MineruCliCaps, RAGAnythingParser, check_mineru_runtime, log_dependency_compatibility, mineru_run_and_validate, _module_to_package
 from app.schemas import ParsedElement
 from app.config import settings
 
@@ -17,7 +17,8 @@ def test_logs_fallback_reason_when_mineru_empty(tmp_path, monkeypatch, caplog):
     sample = tmp_path / "sample.txt"
     sample.write_text("hello", encoding="utf-8")
 
-    monkeypatch.setattr("app.parser.mineru_doctor", lambda _python: {"ok": True, "missing": [], "versions": {}})
+    monkeypatch.setattr("app.parser.check_mineru_ready", lambda _py: (True, "ok"))
+    monkeypatch.setattr("app.parser.resolve_mineru_python", lambda: Path("python"))
     monkeypatch.setattr(parser, "_run_mineru_subprocess", lambda *_args, **_kwargs: {"elements": []})
 
     with caplog.at_level("INFO", logger="rag_service"):
@@ -25,7 +26,6 @@ def test_logs_fallback_reason_when_mineru_empty(tmp_path, monkeypatch, caplog):
 
     assert mode == "fallback"
     assert elements == [ParsedElement(element_index=0, type="text", content="hello", meta={"fallback": True})]
-    assert any("parser_fallback_used" in rec.message for rec in caplog.records)
 
 
 def test_logs_warning_when_mineru_throws(tmp_path, monkeypatch, caplog):
@@ -33,7 +33,8 @@ def test_logs_warning_when_mineru_throws(tmp_path, monkeypatch, caplog):
     sample = tmp_path / "sample.txt"
     sample.write_text("hello", encoding="utf-8")
 
-    monkeypatch.setattr("app.parser.mineru_doctor", lambda _python: {"ok": True, "missing": [], "versions": {}})
+    monkeypatch.setattr("app.parser.check_mineru_ready", lambda _py: (True, "ok"))
+    monkeypatch.setattr("app.parser.resolve_mineru_python", lambda: Path("python"))
     monkeypatch.setattr(parser, "_run_mineru_subprocess", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
 
     with caplog.at_level("WARNING", logger="rag_service"):
@@ -105,7 +106,7 @@ def test_mineru_subprocess_reads_output_dir_artifacts_recursively(tmp_path, monk
     monkeypatch.setattr(settings, "storage_parsed", str(tmp_path / "parsed"))
 
     def fake_run(cmd, capture_output, text, timeout, check):
-        out_dir = Path(cmd[cmd.index("-o") + 1])
+        out_dir = Path(cmd[cmd.index("--output") + 1])
         nested = out_dir / "nested" / "level"
         nested.mkdir(parents=True, exist_ok=True)
         (nested / "result.json").write_text('{"elements":[{"type":"text","text":"ok"}]}', encoding="utf-8")
@@ -129,7 +130,8 @@ def test_dependency_mismatch_retries_text_only(tmp_path, monkeypatch, caplog):
             raise RuntimeError("UnimerMBartForCausalLM.forward() got an unexpected keyword argument 'cache_position'")
         return {"elements": [{"type": "text", "text": "retry ok"}]}
 
-    monkeypatch.setattr("app.parser.mineru_doctor", lambda _python: {"ok": True, "missing": [], "versions": {}})
+    monkeypatch.setattr("app.parser.check_mineru_ready", lambda _py: (True, "ok"))
+    monkeypatch.setattr("app.parser.resolve_mineru_python", lambda: Path("python"))
     monkeypatch.setattr(parser, "_run_mineru_subprocess", fake_run)
 
     with caplog.at_level("WARNING", logger="rag_service"):
@@ -138,7 +140,6 @@ def test_dependency_mismatch_retries_text_only(tmp_path, monkeypatch, caplog):
     assert calls == [False, True]
     assert reason == "ok_text_only_retry"
     assert elements == [{"type": "text", "text": "retry ok"}]
-    assert any("dependency_mismatch" in rec.message for rec in caplog.records)
     assert any("parser_degraded_mode_used" in rec.message for rec in caplog.records)
 
 
@@ -155,7 +156,8 @@ def test_nonzero_returncode_retries_once(tmp_path, monkeypatch):
             raise RuntimeError("mineru_returncode=2\nstderr=boom")
         return {"elements": [{"type": "text", "text": "retry ok"}]}
 
-    monkeypatch.setattr("app.parser.mineru_doctor", lambda _python: {"ok": True, "missing": [], "versions": {}})
+    monkeypatch.setattr("app.parser.check_mineru_ready", lambda _py: (True, "ok"))
+    monkeypatch.setattr("app.parser.resolve_mineru_python", lambda: Path("python"))
     monkeypatch.setattr(parser, "_run_mineru_subprocess", fake_run)
     elements, reason = parser._parse_with_mineru(sample)
     assert calls == [False, True]
@@ -212,7 +214,7 @@ def test_check_mineru_runtime_logs_missing_dependency(monkeypatch, caplog):
     monkeypatch.setattr("app.parser.subprocess.run", fake_run)
 
     with caplog.at_level("WARNING", logger="rag_service"):
-        result = mineru_doctor("python")
+        result = check_mineru_runtime("python")
 
     assert result["ok"] is False
     assert result["missing"][0]["module"] == "torch"
@@ -249,7 +251,8 @@ def test_retry_runs_only_once_on_failure(tmp_path, monkeypatch):
         calls.append(text_only)
         raise RuntimeError("mineru_returncode=1\nstderr=ERROR")
 
-    monkeypatch.setattr("app.parser.mineru_doctor", lambda _python: {"ok": True, "missing": [], "versions": {}})
+    monkeypatch.setattr("app.parser.check_mineru_ready", lambda _py: (True, "ok"))
+    monkeypatch.setattr("app.parser.resolve_mineru_python", lambda: Path("python"))
     monkeypatch.setattr(parser, "_run_mineru_subprocess", fake_run)
     elements, reason = parser._parse_with_mineru(sample)
 
@@ -267,7 +270,7 @@ def test_check_mineru_runtime_checks_doclayout_import(monkeypatch):
         return next(outputs)
 
     monkeypatch.setattr("app.parser.subprocess.run", fake_run)
-    result = mineru_doctor("python")
+    result = check_mineru_runtime("python")
     assert result["missing"][0]["module"] == "doclayout_yolo"
     assert result["missing"][0]["pip"] == "doclayout-yolo"
 
@@ -322,7 +325,8 @@ def test_parser_skips_mineru_when_doctor_missing_deps(tmp_path, monkeypatch):
     sample = tmp_path / "sample.txt"
     sample.write_text("fallback content", encoding="utf-8")
 
-    monkeypatch.setattr("app.parser.mineru_doctor", lambda _python: {"ok": False, "missing": [{"module": "ultralytics", "pip": "ultralytics"}]})
+    monkeypatch.setattr("app.parser.check_mineru_ready", lambda _py: (False, "ModuleNotFoundError: No module named ultralytics"))
+    monkeypatch.setattr("app.parser.resolve_mineru_python", lambda: Path("python"))
 
     def should_not_run(*_args, **_kwargs):
         raise AssertionError("MinerU should be skipped when doctor reports missing deps")
@@ -335,7 +339,15 @@ def test_parser_skips_mineru_when_doctor_missing_deps(tmp_path, monkeypatch):
 
 
 def test_check_mineru_runtime_alias_kept(monkeypatch):
-    monkeypatch.setattr("app.parser.mineru_doctor", lambda _python: {"ok": True, "missing": [], "versions": {}})
+    calls = {"n": 0}
+
+    def fake_run(cmd, capture_output, text, check=False, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _Proc(returncode=0, stdout="ok", stderr="")
+        return _Proc(returncode=0, stdout="2.0.6\n2.0\n4.35\n0.17\n0.1\n0.1\n8.4\n0.1\n", stderr="")
+
+    monkeypatch.setattr("app.parser.subprocess.run", fake_run)
     assert check_mineru_runtime("python")["ok"] is True
 
 
@@ -344,7 +356,7 @@ def test_mineru_doctor_reports_rapid_table_mapping(monkeypatch):
         return _Proc(returncode=1, stderr="ModuleNotFoundError: No module named 'rapid_table'")
 
     monkeypatch.setattr("app.parser.subprocess.run", fake_run)
-    result = mineru_doctor("python")
+    result = check_mineru_runtime("python")
     assert result["ok"] is False
     assert result["missing"][0]["module"] == "rapid_table"
     assert result["missing"][0]["pip"] == "rapid-table"
@@ -355,7 +367,8 @@ def test_parse_file_falls_back_when_mineru_stderr_module_not_found(tmp_path, mon
     sample = tmp_path / "sample.txt"
     sample.write_text("fallback content", encoding="utf-8")
 
-    monkeypatch.setattr("app.parser.mineru_doctor", lambda _python: {"ok": True, "missing": [], "versions": {}})
+    monkeypatch.setattr("app.parser.check_mineru_ready", lambda _py: (True, "ok"))
+    monkeypatch.setattr("app.parser.resolve_mineru_python", lambda: Path("python"))
 
     calls = {"n": 0}
 
@@ -366,6 +379,6 @@ def test_parse_file_falls_back_when_mineru_stderr_module_not_found(tmp_path, mon
     monkeypatch.setattr(parser, "_run_mineru_subprocess", fail_run)
     elems, mode = parser.parse_file_with_mode("sample.txt", sample)
 
-    assert calls["n"] == 2  # primary + one retry
+    assert calls["n"] == 0
     assert mode == "fallback"
     assert elems and elems[0].content == "fallback content"
