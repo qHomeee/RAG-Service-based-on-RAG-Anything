@@ -296,6 +296,7 @@ def test_mineru_run_and_validate_detects_missing_module_mapping(tmp_path, monkey
 def test_module_to_package_mapping_known_cases():
     assert _module_to_package("fast_langdetect") == "fast-langdetect"
     assert _module_to_package("doclayout_yolo") == "doclayout-yolo"
+    assert _module_to_package("rapid_table") == "rapid-table"
 
 
 def test_mineru_run_and_validate_fails_on_module_not_found_zero_returncode(tmp_path, monkeypatch):
@@ -336,3 +337,35 @@ def test_parser_skips_mineru_when_doctor_missing_deps(tmp_path, monkeypatch):
 def test_check_mineru_runtime_alias_kept(monkeypatch):
     monkeypatch.setattr("app.parser.mineru_doctor", lambda _python: {"ok": True, "missing": [], "versions": {}})
     assert check_mineru_runtime("python")["ok"] is True
+
+
+def test_mineru_doctor_reports_rapid_table_mapping(monkeypatch):
+    def fake_run(cmd, capture_output, text, check=False, timeout=None):
+        return _Proc(returncode=1, stderr="ModuleNotFoundError: No module named 'rapid_table'")
+
+    monkeypatch.setattr("app.parser.subprocess.run", fake_run)
+    result = mineru_doctor("python")
+    assert result["ok"] is False
+    assert result["missing"][0]["module"] == "rapid_table"
+    assert result["missing"][0]["pip"] == "rapid-table"
+
+
+def test_parse_file_falls_back_when_mineru_stderr_module_not_found(tmp_path, monkeypatch):
+    parser = RAGAnythingParser()
+    sample = tmp_path / "sample.txt"
+    sample.write_text("fallback content", encoding="utf-8")
+
+    monkeypatch.setattr("app.parser.mineru_doctor", lambda _python: {"ok": True, "missing": [], "versions": {}})
+
+    calls = {"n": 0}
+
+    def fail_run(*_args, **_kwargs):
+        calls["n"] += 1
+        raise RuntimeError("mineru_returncode=0\nstderr=ModuleNotFoundError: No module named 'ultralytics'")
+
+    monkeypatch.setattr(parser, "_run_mineru_subprocess", fail_run)
+    elems, mode = parser.parse_file_with_mode("sample.txt", sample)
+
+    assert calls["n"] == 2  # primary + one retry
+    assert mode == "fallback"
+    assert elems and elems[0].content == "fallback content"

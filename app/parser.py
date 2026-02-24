@@ -24,6 +24,7 @@ MINERU_MODULE_TO_PACKAGE = {
     "huggingface_hub": "huggingface-hub",
     "ultralytics": "ultralytics",
     "torch": "torch",
+    "rapid_table": "rapid-table",
 }
 
 
@@ -31,16 +32,16 @@ def mineru_doctor(python_exe: str) -> dict[str, Any]:
     check_cmd = [
         python_exe,
         "-c",
-        "import torch, ultralytics, doclayout_yolo, transformers, huggingface_hub; "
+        "import torch, ultralytics, doclayout_yolo, rapid_table, transformers, huggingface_hub; "
         "from fast_langdetect import detect_language; print('ok')",
     ]
     versions_cmd = [
         python_exe,
         "-c",
-        "import mineru, torch, ultralytics, doclayout_yolo, transformers, huggingface_hub, fast_langdetect; "
+        "import mineru, torch, ultralytics, doclayout_yolo, rapid_table, transformers, huggingface_hub, fast_langdetect; "
         "print(mineru.__version__); print(torch.__version__); print(transformers.__version__); "
         "print(huggingface_hub.__version__); print(getattr(fast_langdetect, '__version__', 'unknown')); "
-        "print(getattr(doclayout_yolo, '__version__', 'unknown')); print(getattr(ultralytics, '__version__', 'unknown'))",
+        "print(getattr(doclayout_yolo, '__version__', 'unknown')); print(getattr(ultralytics, '__version__', 'unknown')); print(getattr(rapid_table, '__version__', 'unknown'))",
     ]
 
     missing: list[dict[str, str]] = []
@@ -52,6 +53,7 @@ def mineru_doctor(python_exe: str) -> dict[str, Any]:
         "fast_langdetect": "unknown",
         "doclayout_yolo": "unknown",
         "ultralytics": "unknown",
+        "rapid_table": "unknown",
     }
 
     try:
@@ -106,6 +108,7 @@ def mineru_doctor(python_exe: str) -> dict[str, Any]:
         "fast_langdetect": lines[4] if len(lines) > 4 else "unknown",
         "doclayout_yolo": lines[5] if len(lines) > 5 else "unknown",
         "ultralytics": lines[6] if len(lines) > 6 else "unknown",
+        "rapid_table": lines[7] if len(lines) > 7 else "unknown",
     }
     result = {"ok": True, "missing": [], "versions": versions}
     logger.info("mineru_doctor", extra={"ok": True, "missing": [], "versions": versions})
@@ -435,7 +438,7 @@ def mineru_run_and_validate(*, cmd: list[str], output_dir: Path, source_path: Pa
     logger.info("mineru_stderr_tail", extra={"path": str(source_path), "stderr_tail": stderr[-4000:]})
 
     files = _collect_output_files(output_dir)
-    if files:
+    if is_mineru_output_valid(output_dir):
         logger.info(
             "mineru_output_files",
             extra={
@@ -517,7 +520,7 @@ def mineru_run_and_validate(*, cmd: list[str], output_dir: Path, source_path: Pa
             f"mineru_returncode={proc.returncode}\ncmd={' '.join(cmd)}\nstdout={stdout}\nstderr={stderr}"
         )
 
-    if not files:
+    if not is_mineru_output_valid(output_dir):
         logger.warning(
             "mineru_output_empty",
             extra={
@@ -532,9 +535,16 @@ def mineru_run_and_validate(*, cmd: list[str], output_dir: Path, source_path: Pa
     return files
 
 
+def is_mineru_output_valid(output_dir: Path) -> bool:
+    files = _collect_output_files(output_dir)
+    if not files:
+        return False
+    return any(file.suffix.lower() in {".json", ".md", ".txt"} for file in files)
+
+
 def _stderr_indicates_failure(stderr: str) -> bool:
     lowered = (stderr or "").lower()
-    return "traceback" in lowered or "modulenotfounderror" in lowered or "error" in lowered
+    return ("traceback" in lowered or "modulenotfounderror" in lowered or "importerror" in lowered or "error |" in lowered or "error" in lowered)
 
 
 def _extract_missing_module(stderr: str) -> str | None:

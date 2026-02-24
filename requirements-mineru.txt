@@ -1,5 +1,6 @@
 mineru==2.0.6
 torch
 ultralytics
-fast-langdetect
 doclayout-yolo
+rapid-table
+fast-langdetect
