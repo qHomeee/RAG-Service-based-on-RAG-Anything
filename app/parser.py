@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 import shutil
 from dataclasses import dataclass
@@ -16,6 +17,52 @@ from app.utils import normalize_text
 
 
 logger = logging.getLogger("rag_service")
+
+
+def check_mineru_runtime(mineru_python: str) -> dict[str, Any]:
+    versions_cmd = [
+        mineru_python,
+        "-c",
+        "import mineru, torch, fast_langdetect, transformers, huggingface_hub; "
+        "print(mineru.__version__); print(torch.__version__); print(transformers.__version__); "
+        "print(huggingface_hub.__version__); print(fast_langdetect.__version__)",
+    ]
+    check_cmd = [
+        mineru_python,
+        "-c",
+        "import torch, fast_langdetect, transformers, huggingface_hub; print('ok')",
+    ]
+
+    proc = subprocess.run(check_cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        module = _extract_missing_module(stderr)
+        if module:
+            logger.error(
+                "mineru_missing_dependency",
+                extra={
+                    "missing_module": module,
+                    "how_to_fix": "pip install -r requirements-mineru.txt",
+                },
+            )
+        return {
+            "ok": False,
+            "module": module,
+            "error": stderr or (proc.stdout or "").strip(),
+            "how_to_fix": "pip install -r requirements-mineru.txt",
+        }
+
+    vproc = subprocess.run(versions_cmd, capture_output=True, text=True, check=False)
+    lines = [line.strip() for line in (vproc.stdout or "").splitlines() if line.strip()]
+    versions = {
+        "mineru": lines[0] if len(lines) > 0 else "unknown",
+        "torch": lines[1] if len(lines) > 1 else "unknown",
+        "transformers": lines[2] if len(lines) > 2 else "unknown",
+        "huggingface_hub": lines[3] if len(lines) > 3 else "unknown",
+        "fast_langdetect": lines[4] if len(lines) > 4 else "unknown",
+    }
+    logger.info("mineru_runtime_versions", extra=versions)
+    return {"ok": True, **versions}
 
 
 def log_dependency_compatibility() -> None:
@@ -157,56 +204,7 @@ class RAGAnythingParser:
         return output_dir, False
 
     def _execute_mineru_command(self, *, path: Path, output_dir: Path, cmd: list[str]) -> Any:
-        logger.info("mineru_cmd", extra={"cmd": cmd})
-        logger.info("mineru_output_dir", extra={"path": str(output_dir)})
-
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=settings.mineru_timeout_seconds,
-            check=False,
-        )
-
-        stdout = (proc.stdout or "").strip()
-        stderr = (proc.stderr or "").strip()
-        logger.info("mineru_returncode", extra={"path": str(path), "returncode": proc.returncode})
-        logger.info("mineru_stdout_tail", extra={"path": str(path), "stdout_tail": stdout[-4000:]})
-        logger.info("mineru_stderr_tail", extra={"path": str(path), "stderr_tail": stderr[-4000:]})
-        if proc.returncode != 0:
-            logger.error(
-                "mineru_execution_error",
-                extra={
-                    "path": str(path),
-                    "returncode": proc.returncode,
-                    "cmd": cmd,
-                    "stderr_excerpt": stderr[-4000:],
-                },
-            )
-            raise RuntimeError(f"mineru_returncode={proc.returncode}\ncmd={' '.join(cmd)}\nstdout={stdout}\nstderr={stderr}")
-
-        output_files = _collect_output_files(output_dir)
-        if not output_files:
-            logger.warning(
-                "mineru_output_empty",
-                extra={
-                    "path": str(path),
-                    "output_dir": str(output_dir),
-                    "stdout_tail": stdout[-4000:],
-                    "stderr_tail": stderr[-4000:],
-                },
-            )
-            raise RuntimeError(f"mineru_output_empty:{output_dir}")
-
-        logger.info(
-            "mineru_output_files",
-            extra={
-                "path": str(path),
-                "output_dir": str(output_dir),
-                "count": len(output_files),
-                "files": [str(file.relative_to(output_dir)) for file in output_files[:30]],
-            },
-        )
+        output_files = mineru_run_and_validate(cmd=cmd, output_dir=output_dir, source_path=path)
         return _read_mineru_output_dir(output_dir, output_files)
 
     @staticmethod
@@ -355,6 +353,78 @@ def _read_mineru_output_dir(output_dir: Path, files: list[Path] | None = None) -
             return {"elements": [{"type": "text", "text": text}]}
 
     raise RuntimeError(f"mineru_output_artifact_not_found:{output_dir}")
+
+
+def mineru_run_and_validate(*, cmd: list[str], output_dir: Path, source_path: Path) -> list[Path]:
+    logger.info("mineru_cmd", extra={"cmd": cmd})
+    logger.info("mineru_output_dir", extra={"path": str(output_dir)})
+
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=settings.mineru_timeout_seconds,
+        check=False,
+    )
+
+    stdout = (proc.stdout or "").strip()
+    stderr = (proc.stderr or "").strip()
+    logger.info("mineru_returncode", extra={"path": str(source_path), "returncode": proc.returncode})
+    logger.info("mineru_stdout_tail", extra={"path": str(source_path), "stdout_tail": stdout[-4000:]})
+    logger.info("mineru_stderr_tail", extra={"path": str(source_path), "stderr_tail": stderr[-4000:]})
+
+    files = _collect_output_files(output_dir)
+    if files:
+        logger.info(
+            "mineru_output_files",
+            extra={
+                "path": str(source_path),
+                "output_dir": str(output_dir),
+                "count": len(files),
+                "files": [str(file.relative_to(output_dir)) for file in files[:30]],
+            },
+        )
+
+    stderr_fail = _stderr_indicates_failure(stderr)
+    if proc.returncode != 0 or stderr_fail:
+        logger.error(
+            "mineru_execution_error",
+            extra={
+                "path": str(source_path),
+                "returncode": proc.returncode,
+                "cmd": cmd,
+                "stderr_excerpt": stderr[-4000:],
+            },
+        )
+        raise RuntimeError(
+            f"mineru_returncode={proc.returncode}\ncmd={' '.join(cmd)}\nstdout={stdout}\nstderr={stderr}"
+        )
+
+    if not files:
+        logger.warning(
+            "mineru_output_empty",
+            extra={
+                "path": str(source_path),
+                "output_dir": str(output_dir),
+                "stdout_tail": stdout[-4000:],
+                "stderr_tail": stderr[-4000:],
+            },
+        )
+        raise RuntimeError(f"mineru_output_empty:{output_dir}")
+
+    return files
+
+
+def _stderr_indicates_failure(stderr: str) -> bool:
+    lowered = (stderr or "").lower()
+    return "traceback" in lowered or "modulenotfounderror" in lowered or "error" in lowered
+
+
+def _extract_missing_module(stderr: str) -> str | None:
+    match = re.search(r'No module named ["\']([^"\']+)["\']', stderr or "")
+    if match:
+        return match.group(1)
+    return None
 
 
 def _safe_version(pkg: str) -> str | None:

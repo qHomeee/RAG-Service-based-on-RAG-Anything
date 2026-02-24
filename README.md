@@ -91,6 +91,8 @@ python -m venv .venv-mineru
 pip install -r requirements-mineru.txt
 ```
 
+`requirements-mineru.txt` intentionally contains runtime-critical dependencies (`mineru`, `torch`, `transformers`, `huggingface-hub`, `fast-langdetect`) so `.venv-mineru` is self-sufficient.
+
 Point service to MinerU python:
 
 ```powershell
@@ -321,6 +323,8 @@ curl -X POST http://localhost:8000/sources -H "Content-Type: application/json" -
 - Newer releases may expose package name/layout as `raganything` (without underscore) and different internal modules; this service now auto-detects supported parser entrypoints across known layouts.
 - MinerU now runs via a separate python process (`MINERU_PYTHON`) so core dependencies remain conflict-free.
 - MinerU CLI flags vary by version; service auto-detects supported options via `--help` and reads parsing artifacts from `output_dir` when `--json` is unavailable.
+- Startup performs MinerU runtime doctor (`torch`, `fast_langdetect`, `transformers`, `huggingface_hub`) via `MINERU_PYTHON`; missing modules are logged as `mineru_missing_dependency` with remediation `pip install -r requirements-mineru.txt`.
+- MinerU run success is validated by return code, stderr patterns (`Traceback`, `ModuleNotFoundError`, `ERROR`), and non-empty recursive artifacts; failures trigger one text-only retry before fallback.
 - MinerU + transformers incompatibility (`cache_position`): if logs show `UnimerMBartForCausalLM.forward() got an unexpected keyword argument 'cache_position'`, pin transformers to MinerU-compatible version and restart service:
   1. `pip install "transformers==4.35.0"`
   2. restart API process (`uvicorn`/systemd).

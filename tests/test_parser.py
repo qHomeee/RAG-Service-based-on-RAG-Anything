@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from app.parser import MineruCliCaps, RAGAnythingParser, log_dependency_compatibility
+from app.parser import MineruCliCaps, RAGAnythingParser, check_mineru_runtime, log_dependency_compatibility, mineru_run_and_validate
 from app.schemas import ParsedElement
 from app.config import settings
 
@@ -196,3 +196,57 @@ def test_mineru_uses_cached_output_when_not_reindex(tmp_path, monkeypatch):
 
     data = parser._run_mineru_subprocess(sample, text_only=False, reindex=False)
     assert data["elements"][0]["text"] == "cached markdown"
+
+
+def test_check_mineru_runtime_logs_missing_dependency(monkeypatch, caplog):
+    calls = []
+
+    def fake_run(cmd, capture_output, text, check=False, timeout=None):
+        calls.append(cmd)
+        return _Proc(returncode=1, stderr="ModuleNotFoundError: No module named 'torch'")
+
+    monkeypatch.setattr("app.parser.subprocess.run", fake_run)
+
+    with caplog.at_level("ERROR", logger="rag_service"):
+        result = check_mineru_runtime("python")
+
+    assert result["ok"] is False
+    assert result["module"] == "torch"
+    assert any("mineru_missing_dependency" in rec.message for rec in caplog.records)
+
+
+def test_mineru_run_and_validate_fails_on_traceback_even_zero_returncode(tmp_path, monkeypatch):
+    out_dir = tmp_path / "parsed"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "nested").mkdir()
+    (out_dir / "nested" / "result.md").write_text("ok", encoding="utf-8")
+
+    def fake_run(cmd, capture_output, text, timeout, check):
+        return _Proc(returncode=0, stdout="", stderr="Traceback (most recent call last): boom")
+
+    monkeypatch.setattr("app.parser.subprocess.run", fake_run)
+
+    try:
+        mineru_run_and_validate(cmd=["python", "-m", "mineru.cli.client"], output_dir=out_dir, source_path=tmp_path / "a.pdf")
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "mineru_returncode=0" in str(exc)
+
+
+def test_retry_runs_only_once_on_failure(tmp_path, monkeypatch):
+    parser = RAGAnythingParser()
+    sample = tmp_path / "sample.pdf"
+    sample.write_bytes(b"%PDF-1.4")
+
+    calls: list[bool] = []
+
+    def fake_run(path, *, text_only: bool, reindex: bool = False):
+        calls.append(text_only)
+        raise RuntimeError("mineru_returncode=1\nstderr=ERROR")
+
+    monkeypatch.setattr(parser, "_run_mineru_subprocess", fake_run)
+    elements, reason = parser._parse_with_mineru(sample)
+
+    assert calls == [False, True]
+    assert elements is None
+    assert reason.startswith("dependency_mismatch:")
