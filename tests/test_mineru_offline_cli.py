@@ -11,13 +11,18 @@ def test_build_command_uses_offline_entrypoint(tmp_path):
 
 
 def test_offline_cli_installs_llm_stub(monkeypatch):
+    fake_mineru = types.ModuleType("mineru")
+    fake_cli_pkg = types.ModuleType("mineru.cli")
     fake_client = types.ModuleType("mineru.cli.client")
 
-    class _Cli:
-        def main(self, args, standalone_mode):
-            return None
+    def _main():
+        return None
 
-    fake_client.cli = _Cli()
+    fake_client.main = _main
+    fake_cli_pkg.client = fake_client
+    fake_mineru.cli = fake_cli_pkg
+    monkeypatch.setitem(sys.modules, "mineru", fake_mineru)
+    monkeypatch.setitem(sys.modules, "mineru.cli", fake_cli_pkg)
     monkeypatch.setitem(sys.modules, "mineru.cli.client", fake_client)
     monkeypatch.setenv("DISABLE_MINERU_LLM", "1")
 

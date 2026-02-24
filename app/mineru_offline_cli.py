@@ -25,10 +25,12 @@ def _install_llm_aided_stub() -> None:
 
 def main() -> int:
     _install_llm_aided_stub()
-    from mineru.cli.client import cli
+    import mineru.cli.client as mineru_client
 
     try:
-        cli.main(args=sys.argv[1:], standalone_mode=False)
+        # MinerU versions differ: some do not export `cli` object from mineru.cli.client.
+        # Calling module-level `main()` keeps compatibility across those versions.
+        mineru_client.main()
         return 0
     except SystemExit as exc:
         code = exc.code if isinstance(exc.code, int) else 1
