@@ -1,6 +1,5 @@
 mineru==2.0.6
 torch
-transformers
-huggingface-hub
+ultralytics
 fast-langdetect
 doclayout-yolo

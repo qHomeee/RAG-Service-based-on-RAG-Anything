@@ -22,31 +22,61 @@ MINERU_MODULE_TO_PACKAGE = {
     "fast_langdetect": "fast-langdetect",
     "doclayout_yolo": "doclayout-yolo",
     "huggingface_hub": "huggingface-hub",
+    "ultralytics": "ultralytics",
+    "torch": "torch",
 }
 
 
-def check_mineru_runtime(mineru_python: str) -> dict[str, Any]:
-    versions_cmd = [
-        mineru_python,
-        "-c",
-        "import mineru, torch, fast_langdetect, transformers, huggingface_hub, doclayout_yolo; "
-        "from fast_langdetect import detect_language; "
-        "print(mineru.__version__); print(torch.__version__); print(transformers.__version__); "
-        "print(huggingface_hub.__version__); print(getattr(fast_langdetect, '__version__', 'unknown')); "
-        "print(getattr(doclayout_yolo, '__version__', 'unknown'))",
-    ]
+def mineru_doctor(python_exe: str) -> dict[str, Any]:
     check_cmd = [
-        mineru_python,
+        python_exe,
         "-c",
-        "import torch, transformers, huggingface_hub, doclayout_yolo; "
+        "import torch, ultralytics, doclayout_yolo, transformers, huggingface_hub; "
         "from fast_langdetect import detect_language; print('ok')",
     ]
+    versions_cmd = [
+        python_exe,
+        "-c",
+        "import mineru, torch, ultralytics, doclayout_yolo, transformers, huggingface_hub, fast_langdetect; "
+        "print(mineru.__version__); print(torch.__version__); print(transformers.__version__); "
+        "print(huggingface_hub.__version__); print(getattr(fast_langdetect, '__version__', 'unknown')); "
+        "print(getattr(doclayout_yolo, '__version__', 'unknown')); print(getattr(ultralytics, '__version__', 'unknown'))",
+    ]
 
-    proc = subprocess.run(check_cmd, capture_output=True, text=True, check=False)
+    missing: list[dict[str, str]] = []
+    versions: dict[str, str] = {
+        "mineru": "unknown",
+        "torch": "unknown",
+        "transformers": "unknown",
+        "huggingface_hub": "unknown",
+        "fast_langdetect": "unknown",
+        "doclayout_yolo": "unknown",
+        "ultralytics": "unknown",
+    }
+
+    try:
+        proc = subprocess.run(check_cmd, capture_output=True, text=True, check=False)
+    except Exception as exc:
+        module = _extract_missing_module(str(exc))
+        if not module:
+            module = "mineru_python"
+        result = {
+            "ok": False,
+            "message": "mineru_missing_dependency",
+            "missing": [{"module": module, "pip": _module_to_package(module) or module}],
+            "versions": versions,
+            "error": str(exc),
+            "how_to_fix": "pip install -r requirements-mineru.txt",
+        }
+        logger.error("mineru_missing_dependency", extra={"missing_module": module, "suggested_package": _module_to_package(module), "how_to_fix": "pip install -r requirements-mineru.txt"})
+        logger.warning("mineru_doctor", extra={"ok": False, "missing": result["missing"], "versions": versions})
+        return result
+
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
         module = _extract_missing_module(stderr)
         if module:
+            missing.append({"module": module, "pip": _module_to_package(module) or module})
             logger.error(
                 "mineru_missing_dependency",
                 extra={
@@ -55,14 +85,16 @@ def check_mineru_runtime(mineru_python: str) -> dict[str, Any]:
                     "how_to_fix": "pip install -r requirements-mineru.txt",
                 },
             )
-        return {
+        result = {
             "ok": False,
             "message": "mineru_missing_dependency",
-            "module": module,
-            "suggested_package": _module_to_package(module) if module else None,
+            "missing": missing,
+            "versions": versions,
             "error": stderr or (proc.stdout or "").strip(),
             "how_to_fix": "pip install -r requirements-mineru.txt",
         }
+        logger.warning("mineru_doctor", extra={"ok": False, "missing": missing, "versions": versions})
+        return result
 
     vproc = subprocess.run(versions_cmd, capture_output=True, text=True, check=False)
     lines = [line.strip() for line in (vproc.stdout or "").splitlines() if line.strip()]
@@ -73,9 +105,16 @@ def check_mineru_runtime(mineru_python: str) -> dict[str, Any]:
         "huggingface_hub": lines[3] if len(lines) > 3 else "unknown",
         "fast_langdetect": lines[4] if len(lines) > 4 else "unknown",
         "doclayout_yolo": lines[5] if len(lines) > 5 else "unknown",
+        "ultralytics": lines[6] if len(lines) > 6 else "unknown",
     }
-    logger.info("mineru_runtime_versions", extra=versions)
-    return {"ok": True, **versions}
+    result = {"ok": True, "missing": [], "versions": versions}
+    logger.info("mineru_doctor", extra={"ok": True, "missing": [], "versions": versions})
+    return result
+
+
+def check_mineru_runtime(mineru_python: str) -> dict[str, Any]:
+    """Backward-compatible alias."""
+    return mineru_doctor(mineru_python)
 
 
 def log_dependency_compatibility() -> None:
@@ -138,6 +177,15 @@ class RAGAnythingParser:
         return self._fallback_parse(path), "fallback"
 
     def _parse_with_mineru(self, path: Path, reindex: bool = False) -> tuple[list[dict] | None, str]:
+        doctor = mineru_doctor(settings.mineru_python)
+        if not doctor.get("ok", False):
+            missing = doctor.get("missing", [])
+            logger.warning(
+                "parser_degraded_mode_used",
+                extra={"path": str(path), "mode": "fallback_text_parser", "missing": missing},
+            )
+            return None, "mineru_doctor_missing_deps"
+
         try:
             result = self._run_mineru_subprocess(path, text_only=False, reindex=reindex)
             elements, reason = _extract_elements(result)
@@ -410,7 +458,7 @@ def mineru_run_and_validate(*, cmd: list[str], output_dir: Path, source_path: Pa
             },
         )
 
-    if (proc.returncode != 0 or stderr_fail) and missing_module and settings.auto_install_mineru_deps:
+    if (proc.returncode != 0 or stderr_fail) and missing_module and settings.auto_install_mineru_deps and settings.app_env.lower() not in {"prod", "production"}:
         package = _module_to_package(missing_module)
         if package:
             install_cmd = [settings.mineru_python, "-m", "pip", "install", package]

@@ -15,7 +15,7 @@ from app.db import SessionLocal, engine
 from app.embeddings import EmbeddingProvider
 from app.models import Base
 from app.observability import slo_metrics
-from app.parser import RAGAnythingParser, check_mineru_runtime, log_dependency_compatibility
+from app.parser import RAGAnythingParser, mineru_doctor, log_dependency_compatibility
 from app.repository import RagRepository
 from app.reranker import CrossEncoderReranker
 from app.schemas import (
@@ -88,14 +88,17 @@ def _validate_ingest_path(input_path: str) -> None:
 async def lifespan(app: FastAPI):
     _validate_secure_settings()
     log_dependency_compatibility()
-    runtime = check_mineru_runtime(settings.mineru_python)
+    runtime = mineru_doctor(settings.mineru_python)
     if not runtime.get("ok"):
-        logger.error("dependency_mismatch", extra={"component": "mineru_runtime", **runtime})
-        if settings.app_env.lower() in {"prod", "production"}:
-            raise RuntimeError(
-                f"MinerU runtime dependency check failed: module={runtime.get('module') or 'unknown'}; "
-                "run: pip install -r requirements-mineru.txt"
-            )
+        logger.warning(
+            "dependency_mismatch",
+            extra={
+                "component": "mineru_runtime",
+                "missing": runtime.get("missing", []),
+                "how_to_fix": runtime.get("how_to_fix", "pip install -r requirements-mineru.txt"),
+                "degrade_policy": "fallback_text_parser",
+            },
+        )
     Base.metadata.create_all(bind=engine)
     app.state.parser = RAGAnythingParser()
     app.state.embeddings = EmbeddingProvider()

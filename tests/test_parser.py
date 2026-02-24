@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from app.parser import MineruCliCaps, RAGAnythingParser, check_mineru_runtime, log_dependency_compatibility, mineru_run_and_validate, _module_to_package
+from app.parser import MineruCliCaps, RAGAnythingParser, mineru_doctor, check_mineru_runtime, log_dependency_compatibility, mineru_run_and_validate, _module_to_package
 from app.schemas import ParsedElement
 from app.config import settings
 
@@ -17,6 +17,7 @@ def test_logs_fallback_reason_when_mineru_empty(tmp_path, monkeypatch, caplog):
     sample = tmp_path / "sample.txt"
     sample.write_text("hello", encoding="utf-8")
 
+    monkeypatch.setattr("app.parser.mineru_doctor", lambda _python: {"ok": True, "missing": [], "versions": {}})
     monkeypatch.setattr(parser, "_run_mineru_subprocess", lambda *_args, **_kwargs: {"elements": []})
 
     with caplog.at_level("INFO", logger="rag_service"):
@@ -32,6 +33,7 @@ def test_logs_warning_when_mineru_throws(tmp_path, monkeypatch, caplog):
     sample = tmp_path / "sample.txt"
     sample.write_text("hello", encoding="utf-8")
 
+    monkeypatch.setattr("app.parser.mineru_doctor", lambda _python: {"ok": True, "missing": [], "versions": {}})
     monkeypatch.setattr(parser, "_run_mineru_subprocess", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
 
     with caplog.at_level("WARNING", logger="rag_service"):
@@ -127,6 +129,7 @@ def test_dependency_mismatch_retries_text_only(tmp_path, monkeypatch, caplog):
             raise RuntimeError("UnimerMBartForCausalLM.forward() got an unexpected keyword argument 'cache_position'")
         return {"elements": [{"type": "text", "text": "retry ok"}]}
 
+    monkeypatch.setattr("app.parser.mineru_doctor", lambda _python: {"ok": True, "missing": [], "versions": {}})
     monkeypatch.setattr(parser, "_run_mineru_subprocess", fake_run)
 
     with caplog.at_level("WARNING", logger="rag_service"):
@@ -152,6 +155,7 @@ def test_nonzero_returncode_retries_once(tmp_path, monkeypatch):
             raise RuntimeError("mineru_returncode=2\nstderr=boom")
         return {"elements": [{"type": "text", "text": "retry ok"}]}
 
+    monkeypatch.setattr("app.parser.mineru_doctor", lambda _python: {"ok": True, "missing": [], "versions": {}})
     monkeypatch.setattr(parser, "_run_mineru_subprocess", fake_run)
     elements, reason = parser._parse_with_mineru(sample)
     assert calls == [False, True]
@@ -207,12 +211,12 @@ def test_check_mineru_runtime_logs_missing_dependency(monkeypatch, caplog):
 
     monkeypatch.setattr("app.parser.subprocess.run", fake_run)
 
-    with caplog.at_level("ERROR", logger="rag_service"):
-        result = check_mineru_runtime("python")
+    with caplog.at_level("WARNING", logger="rag_service"):
+        result = mineru_doctor("python")
 
     assert result["ok"] is False
-    assert result["module"] == "torch"
-    assert result["suggested_package"] == "torch"
+    assert result["missing"][0]["module"] == "torch"
+    assert result["missing"][0]["pip"] == "torch"
     assert any("mineru_missing_dependency" in rec.message for rec in caplog.records)
 
 
@@ -245,6 +249,7 @@ def test_retry_runs_only_once_on_failure(tmp_path, monkeypatch):
         calls.append(text_only)
         raise RuntimeError("mineru_returncode=1\nstderr=ERROR")
 
+    monkeypatch.setattr("app.parser.mineru_doctor", lambda _python: {"ok": True, "missing": [], "versions": {}})
     monkeypatch.setattr(parser, "_run_mineru_subprocess", fake_run)
     elements, reason = parser._parse_with_mineru(sample)
 
@@ -262,9 +267,9 @@ def test_check_mineru_runtime_checks_doclayout_import(monkeypatch):
         return next(outputs)
 
     monkeypatch.setattr("app.parser.subprocess.run", fake_run)
-    result = check_mineru_runtime("python")
-    assert result["module"] == "doclayout_yolo"
-    assert result["suggested_package"] == "doclayout-yolo"
+    result = mineru_doctor("python")
+    assert result["missing"][0]["module"] == "doclayout_yolo"
+    assert result["missing"][0]["pip"] == "doclayout-yolo"
 
 
 def test_mineru_run_and_validate_detects_missing_module_mapping(tmp_path, monkeypatch, caplog):
@@ -291,3 +296,43 @@ def test_mineru_run_and_validate_detects_missing_module_mapping(tmp_path, monkey
 def test_module_to_package_mapping_known_cases():
     assert _module_to_package("fast_langdetect") == "fast-langdetect"
     assert _module_to_package("doclayout_yolo") == "doclayout-yolo"
+
+
+def test_mineru_run_and_validate_fails_on_module_not_found_zero_returncode(tmp_path, monkeypatch):
+    out_dir = tmp_path / "parsed"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "nested").mkdir()
+    (out_dir / "nested" / "result.md").write_text("ok", encoding="utf-8")
+
+    def fake_run(cmd, capture_output, text, timeout, check):
+        return _Proc(returncode=0, stdout="", stderr="ModuleNotFoundError: No module named 'ultralytics'")
+
+    monkeypatch.setattr("app.parser.subprocess.run", fake_run)
+
+    try:
+        mineru_run_and_validate(cmd=["python", "-m", "mineru.cli.client"], output_dir=out_dir, source_path=tmp_path / "a.pdf")
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "ultralytics" in str(exc)
+
+
+def test_parser_skips_mineru_when_doctor_missing_deps(tmp_path, monkeypatch):
+    parser = RAGAnythingParser()
+    sample = tmp_path / "sample.txt"
+    sample.write_text("fallback content", encoding="utf-8")
+
+    monkeypatch.setattr("app.parser.mineru_doctor", lambda _python: {"ok": False, "missing": [{"module": "ultralytics", "pip": "ultralytics"}]})
+
+    def should_not_run(*_args, **_kwargs):
+        raise AssertionError("MinerU should be skipped when doctor reports missing deps")
+
+    monkeypatch.setattr(parser, "_run_mineru_subprocess", should_not_run)
+
+    elems, mode = parser.parse_file_with_mode("sample.txt", sample)
+    assert mode == "fallback"
+    assert elems and elems[0].content == "fallback content"
+
+
+def test_check_mineru_runtime_alias_kept(monkeypatch):
+    monkeypatch.setattr("app.parser.mineru_doctor", lambda _python: {"ok": True, "missing": [], "versions": {}})
+    assert check_mineru_runtime("python")["ok"] is True

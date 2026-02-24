@@ -42,6 +42,7 @@ def test_ingest_pipeline_uses_mineru_subprocess_output(tmp_path, monkeypatch):
         assert text_only is False
         return {"elements": [{"type": "text", "text": "Заголовок\n\nТекст документа", "page": 1}]}
 
+    monkeypatch.setattr("app.parser.mineru_doctor", lambda _python: {"ok": True, "missing": [], "versions": {}})
     monkeypatch.setattr(parser, "_run_mineru_subprocess", fake_run_mineru)
 
     repo = _FakeRepo()
