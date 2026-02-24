@@ -1,18 +1,31 @@
 from __future__ import annotations
 
-import os
+import argparse
+import importlib
+import importlib.metadata
+import inspect
 import runpy
 import sys
 import traceback
 import types
+from contextlib import contextmanager
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Offline-safe MinerU runner")
+    parser.add_argument("--path", help="Input file or directory path")
+    parser.add_argument("--output", help="Output directory")
+    parser.add_argument("-b", "--backend", default="pipeline")
+    parser.add_argument("-d", "--device", default="cpu")
+    parser.add_argument("--offline", dest="offline", action="store_true", default=True)
+    parser.add_argument("--no-offline", dest="offline", action="store_false")
+    parser.add_argument("--doctor", action="store_true", help="Check key MinerU runtime imports")
+    parser.add_argument("--verbose", action="store_true")
+    return parser
 
 
 def _install_llm_aided_stub() -> None:
-    disable_llm = os.getenv("DISABLE_MINERU_LLM", "1") == "1"
-    if not disable_llm:
-        return
-
-    # Install stub before any mineru.* imports so openai-backed llm_aided is never required.
+    # Default is offline mode: disable llm_aided integration unless user explicitly opts out.
     stub = types.ModuleType("mineru.utils.llm_aided")
 
     def llm_aided_title(title: str) -> str:
@@ -36,22 +49,105 @@ def _is_transformers_compat_error(exc: BaseException) -> bool:
     return "transformers" in lowered or "find_pruneable_heads_and_indices" in text
 
 
-def main() -> int:
-    _install_llm_aided_stub()
+def _doctor() -> int:
+    modules = ["mineru", "transformers", "torch", "rapid_table"]
+    failed = False
+    print("[mineru-doctor] checking imports...")
+    for name in modules:
+        try:
+            importlib.import_module(name)
+            try:
+                ver = importlib.metadata.version(name.replace("_", "-"))
+            except Exception:
+                ver = "unknown"
+            print(f"  OK  {name} (version={ver})")
+        except Exception as exc:
+            failed = True
+            print(f"  FAIL {name}: {exc}")
+    return 1 if failed else 0
+
+
+@contextmanager
+def _patched_argv(args: list[str]):
+    old = sys.argv[:]
+    sys.argv = ["mineru.cli.client", *args]
+    try:
+        yield
+    finally:
+        sys.argv = old
+
+
+def _call_mineru_main(mineru_main, args: list[str]) -> None:
+    call_attempts = [
+        lambda: mineru_main(args=args, standalone_mode=False),
+        lambda: mineru_main(standalone_mode=False),
+        lambda: mineru_main(args),
+        lambda: mineru_main(),
+    ]
+    for attempt in call_attempts:
+        try:
+            with _patched_argv(args):
+                attempt()
+            return
+        except TypeError:
+            continue
+    with _patched_argv(args):
+        mineru_main()
+
+
+def _invoke_mineru(mineru_args: list[str]) -> None:
+    try:
+        import mineru.cli.client as mineru_client
+
+        if hasattr(mineru_client, "main"):
+            # `mineru.cli.client.cli` is not exported in some MinerU versions; use module-level main.
+            _call_mineru_main(mineru_client.main, mineru_args)
+            return
+    except ImportError:
+        raise
+
+    # Fallback for versions with different entrypoint layout.
+    with _patched_argv(mineru_args):
+        runpy.run_module("mineru.cli.client", run_name="__main__")
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = [] if argv is None else argv
+    parser = _build_parser()
+    args, passthrough = parser.parse_known_args(argv)
+
+    if args.doctor:
+        return _doctor()
+
+    if args.offline:
+        _install_llm_aided_stub()
+
+    if not args.path or not args.output:
+        parser.error("--path and --output are required unless --doctor is used")
+
+    mineru_args = [
+        "--path",
+        args.path,
+        "--output",
+        args.output,
+        "-b",
+        args.backend,
+        "-d",
+        args.device,
+        *passthrough,
+    ]
+
+    if args.offline:
+        # Force lightweight text mode in offline mode to avoid LLM-aided/title-enhancement path.
+        if "-m" not in mineru_args and "--mode" not in mineru_args:
+            mineru_args += ["-m", "txt"]
+        if "-f" not in mineru_args and "--formula" not in mineru_args:
+            mineru_args += ["-f", "false"]
+        if "-t" not in mineru_args and "--table" not in mineru_args:
+            mineru_args += ["-t", "false"]
 
     try:
-        try:
-            from mineru.cli.client import main as mineru_main
-
-            # Some MinerU versions expose click command as module-level main.
-            try:
-                mineru_main(standalone_mode=False)
-            except TypeError:
-                # Older variants may define main() without click-style kwargs.
-                mineru_main()
-        except (ImportError, AttributeError):
-            # Fallback for versions where entrypoint shape differs.
-            runpy.run_module("mineru.cli.client", run_name="__main__")
+        _invoke_mineru(mineru_args)
         return 0
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else 1
@@ -59,15 +155,22 @@ def main() -> int:
         if _is_transformers_compat_error(exc):
             _print_transformers_hint()
             return 1
-        traceback.print_exc()
+        print(f"MinerU import error: {exc}", file=sys.stderr)
+        if args.verbose:
+            traceback.print_exc()
         return 1
     except Exception as exc:  # pragma: no cover
         if _is_transformers_compat_error(exc):
             _print_transformers_hint()
             return 1
-        traceback.print_exc()
+        print(f"MinerU pipeline failed: {exc}", file=sys.stderr)
+        if args.verbose:
+            traceback.print_exc()
         return 1
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))
+
+# PowerShell example:
+# python -m app.mineru_offline_cli --path "storage/raw/book.pdf" --output "storage/parsed/book" -b pipeline -d cpu --offline

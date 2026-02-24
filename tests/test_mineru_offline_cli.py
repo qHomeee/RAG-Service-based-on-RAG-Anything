@@ -26,7 +26,7 @@ def test_offline_cli_installs_llm_stub(monkeypatch):
     monkeypatch.setitem(sys.modules, "mineru.cli.client", fake_client)
     monkeypatch.setenv("DISABLE_MINERU_LLM", "1")
 
-    rc = main()
+    rc = main(["--path", "in.pdf", "--output", "out"])
     assert rc == 0
     assert "mineru.utils.llm_aided" in sys.modules
     assert sys.modules["mineru.utils.llm_aided"].llm_aided_title("abc") == "abc"
