@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from app.parser import MineruCliCaps, RAGAnythingParser, check_mineru_runtime, log_dependency_compatibility, mineru_run_and_validate
+from app.parser import MineruCliCaps, RAGAnythingParser, check_mineru_runtime, log_dependency_compatibility, mineru_run_and_validate, _module_to_package
 from app.schemas import ParsedElement
 from app.config import settings
 
@@ -212,6 +212,7 @@ def test_check_mineru_runtime_logs_missing_dependency(monkeypatch, caplog):
 
     assert result["ok"] is False
     assert result["module"] == "torch"
+    assert result["suggested_package"] == "torch"
     assert any("mineru_missing_dependency" in rec.message for rec in caplog.records)
 
 
@@ -250,3 +251,43 @@ def test_retry_runs_only_once_on_failure(tmp_path, monkeypatch):
     assert calls == [False, True]
     assert elements is None
     assert reason.startswith("dependency_mismatch:")
+
+
+def test_check_mineru_runtime_checks_doclayout_import(monkeypatch):
+    outputs = iter([
+        _Proc(returncode=1, stderr="ModuleNotFoundError: No module named 'doclayout_yolo'"),
+    ])
+
+    def fake_run(cmd, capture_output, text, check=False, timeout=None):
+        return next(outputs)
+
+    monkeypatch.setattr("app.parser.subprocess.run", fake_run)
+    result = check_mineru_runtime("python")
+    assert result["module"] == "doclayout_yolo"
+    assert result["suggested_package"] == "doclayout-yolo"
+
+
+def test_mineru_run_and_validate_detects_missing_module_mapping(tmp_path, monkeypatch, caplog):
+    out_dir = tmp_path / "parsed"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "nested").mkdir()
+    (out_dir / "nested" / "result.md").write_text("ok", encoding="utf-8")
+
+    def fake_run(cmd, capture_output, text, timeout, check):
+        return _Proc(returncode=0, stdout="", stderr="ModuleNotFoundError: No module named 'doclayout_yolo'")
+
+    monkeypatch.setattr("app.parser.subprocess.run", fake_run)
+
+    with caplog.at_level("ERROR", logger="rag_service"):
+        try:
+            mineru_run_and_validate(cmd=["python", "-m", "mineru.cli.client"], output_dir=out_dir, source_path=tmp_path / "a.pdf")
+            assert False, "expected RuntimeError"
+        except RuntimeError:
+            pass
+
+    assert any("mineru_missing_dependency_detected" in rec.message for rec in caplog.records)
+
+
+def test_module_to_package_mapping_known_cases():
+    assert _module_to_package("fast_langdetect") == "fast-langdetect"
+    assert _module_to_package("doclayout_yolo") == "doclayout-yolo"

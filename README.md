@@ -60,6 +60,7 @@ APP_ENV=production
 INGEST_PATH_MUST_BE_UNDER_STORAGE_RAW=true
 RATE_LIMIT_PER_MINUTE=120
 UVICORN_WORKERS=2
+AUTO_INSTALL_MINERU_DEPS=false
 ```
 
 ## Run with Docker Postgres
@@ -91,7 +92,7 @@ python -m venv .venv-mineru
 pip install -r requirements-mineru.txt
 ```
 
-`requirements-mineru.txt` intentionally contains runtime-critical dependencies (`mineru`, `torch`, `transformers`, `huggingface-hub`, `fast-langdetect`) so `.venv-mineru` is self-sufficient.
+`requirements-mineru.txt` intentionally contains runtime-critical dependencies (`mineru`, `torch`, `transformers`, `huggingface-hub`, `fast-langdetect`, `doclayout-yolo`) so `.venv-mineru` is self-sufficient.
 
 Point service to MinerU python:
 
@@ -323,7 +324,9 @@ curl -X POST http://localhost:8000/sources -H "Content-Type: application/json" -
 - Newer releases may expose package name/layout as `raganything` (without underscore) and different internal modules; this service now auto-detects supported parser entrypoints across known layouts.
 - MinerU now runs via a separate python process (`MINERU_PYTHON`) so core dependencies remain conflict-free.
 - MinerU CLI flags vary by version; service auto-detects supported options via `--help` and reads parsing artifacts from `output_dir` when `--json` is unavailable.
-- Startup performs MinerU runtime doctor (`torch`, `fast_langdetect`, `transformers`, `huggingface_hub`) via `MINERU_PYTHON`; missing modules are logged as `mineru_missing_dependency` with remediation `pip install -r requirements-mineru.txt`.
+- Startup performs MinerU runtime doctor (`torch`, `fast_langdetect`, `transformers`, `huggingface_hub`, `doclayout_yolo`) via `MINERU_PYTHON`; missing modules are logged as `mineru_missing_dependency` with remediation `pip install -r requirements-mineru.txt`.
+- During MinerU execution, `ModuleNotFoundError` is auto-detected from stderr and logged as `mineru_missing_dependency_detected` with module→package hints (for example `doclayout_yolo -> doclayout-yolo`, `fast_langdetect -> fast-langdetect`).
+- Production does not auto-install missing MinerU deps. Optional dev-only behavior can be enabled with `AUTO_INSTALL_MINERU_DEPS=true` to attempt one `pip install` + one retry.
 - MinerU run success is validated by return code, stderr patterns (`Traceback`, `ModuleNotFoundError`, `ERROR`), and non-empty recursive artifacts; failures trigger one text-only retry before fallback.
 - MinerU + transformers incompatibility (`cache_position`): if logs show `UnimerMBartForCausalLM.forward() got an unexpected keyword argument 'cache_position'`, pin transformers to MinerU-compatible version and restart service:
   1. `pip install "transformers==4.35.0"`

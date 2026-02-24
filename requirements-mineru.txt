@@ -3,3 +3,4 @@ torch
 transformers
 huggingface-hub
 fast-langdetect
+doclayout-yolo

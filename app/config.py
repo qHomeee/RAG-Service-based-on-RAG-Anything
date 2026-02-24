@@ -39,6 +39,7 @@ class Settings(BaseSettings):
 
     mineru_python: str = r".venv-mineru\Scripts\python.exe"
     mineru_timeout_seconds: int = 180
+    auto_install_mineru_deps: bool = False
 
     ingest_path_must_be_under_storage_raw: bool = True
     rate_limit_per_minute: int = 120

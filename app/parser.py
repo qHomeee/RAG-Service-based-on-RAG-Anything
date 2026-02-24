@@ -18,19 +18,28 @@ from app.utils import normalize_text
 
 logger = logging.getLogger("rag_service")
 
+MINERU_MODULE_TO_PACKAGE = {
+    "fast_langdetect": "fast-langdetect",
+    "doclayout_yolo": "doclayout-yolo",
+    "huggingface_hub": "huggingface-hub",
+}
+
 
 def check_mineru_runtime(mineru_python: str) -> dict[str, Any]:
     versions_cmd = [
         mineru_python,
         "-c",
-        "import mineru, torch, fast_langdetect, transformers, huggingface_hub; "
+        "import mineru, torch, fast_langdetect, transformers, huggingface_hub, doclayout_yolo; "
+        "from fast_langdetect import detect_language; "
         "print(mineru.__version__); print(torch.__version__); print(transformers.__version__); "
-        "print(huggingface_hub.__version__); print(fast_langdetect.__version__)",
+        "print(huggingface_hub.__version__); print(getattr(fast_langdetect, '__version__', 'unknown')); "
+        "print(getattr(doclayout_yolo, '__version__', 'unknown'))",
     ]
     check_cmd = [
         mineru_python,
         "-c",
-        "import torch, fast_langdetect, transformers, huggingface_hub; print('ok')",
+        "import torch, transformers, huggingface_hub, doclayout_yolo; "
+        "from fast_langdetect import detect_language; print('ok')",
     ]
 
     proc = subprocess.run(check_cmd, capture_output=True, text=True, check=False)
@@ -42,12 +51,15 @@ def check_mineru_runtime(mineru_python: str) -> dict[str, Any]:
                 "mineru_missing_dependency",
                 extra={
                     "missing_module": module,
+                    "suggested_package": _module_to_package(module),
                     "how_to_fix": "pip install -r requirements-mineru.txt",
                 },
             )
         return {
             "ok": False,
+            "message": "mineru_missing_dependency",
             "module": module,
+            "suggested_package": _module_to_package(module) if module else None,
             "error": stderr or (proc.stdout or "").strip(),
             "how_to_fix": "pip install -r requirements-mineru.txt",
         }
@@ -60,6 +72,7 @@ def check_mineru_runtime(mineru_python: str) -> dict[str, Any]:
         "transformers": lines[2] if len(lines) > 2 else "unknown",
         "huggingface_hub": lines[3] if len(lines) > 3 else "unknown",
         "fast_langdetect": lines[4] if len(lines) > 4 else "unknown",
+        "doclayout_yolo": lines[5] if len(lines) > 5 else "unknown",
     }
     logger.info("mineru_runtime_versions", extra=versions)
     return {"ok": True, **versions}
@@ -386,6 +399,60 @@ def mineru_run_and_validate(*, cmd: list[str], output_dir: Path, source_path: Pa
         )
 
     stderr_fail = _stderr_indicates_failure(stderr)
+    missing_module = _extract_missing_module(stderr)
+    if missing_module:
+        logger.error(
+            "mineru_missing_dependency_detected",
+            extra={
+                "missing_module": missing_module,
+                "suggested_package": _module_to_package(missing_module),
+                "how_to_fix": "add dependency to requirements-mineru.txt and reinstall .venv-mineru",
+            },
+        )
+
+    if (proc.returncode != 0 or stderr_fail) and missing_module and settings.auto_install_mineru_deps:
+        package = _module_to_package(missing_module)
+        if package:
+            install_cmd = [settings.mineru_python, "-m", "pip", "install", package]
+            install = subprocess.run(install_cmd, capture_output=True, text=True, check=False)
+            logger.warning(
+                "mineru_dependency_auto_install_attempt",
+                extra={
+                    "missing_module": missing_module,
+                    "package": package,
+                    "returncode": install.returncode,
+                    "stdout_tail": (install.stdout or "")[-1000:],
+                    "stderr_tail": (install.stderr or "")[-1000:],
+                },
+            )
+            if install.returncode == 0:
+                retry = subprocess.run(cmd, capture_output=True, text=True, timeout=settings.mineru_timeout_seconds, check=False)
+                rstdout = (retry.stdout or "").strip()
+                rstderr = (retry.stderr or "").strip()
+                logger.warning(
+                    "mineru_dependency_auto_install_retry",
+                    extra={
+                        "missing_module": missing_module,
+                        "returncode": retry.returncode,
+                        "stdout_tail": rstdout[-1000:],
+                        "stderr_tail": rstderr[-1000:],
+                    },
+                )
+                if retry.returncode == 0 and not _stderr_indicates_failure(rstderr):
+                    retry_files = _collect_output_files(output_dir)
+                    if retry_files:
+                        logger.info(
+                            "mineru_output_files",
+                            extra={
+                                "path": str(source_path),
+                                "output_dir": str(output_dir),
+                                "count": len(retry_files),
+                                "files": [str(file.relative_to(output_dir)) for file in retry_files[:30]],
+                                "auto_install_retry": True,
+                            },
+                        )
+                        return retry_files
+
     if proc.returncode != 0 or stderr_fail:
         logger.error(
             "mineru_execution_error",
@@ -394,6 +461,8 @@ def mineru_run_and_validate(*, cmd: list[str], output_dir: Path, source_path: Pa
                 "returncode": proc.returncode,
                 "cmd": cmd,
                 "stderr_excerpt": stderr[-4000:],
+                "missing_module": missing_module,
+                "suggested_package": _module_to_package(missing_module) if missing_module else None,
             },
         )
         raise RuntimeError(
@@ -425,6 +494,12 @@ def _extract_missing_module(stderr: str) -> str | None:
     if match:
         return match.group(1)
     return None
+
+
+def _module_to_package(module_name: str | None) -> str | None:
+    if not module_name:
+        return None
+    return MINERU_MODULE_TO_PACKAGE.get(module_name, module_name.replace("_", "-"))
 
 
 def _safe_version(pkg: str) -> str | None:
