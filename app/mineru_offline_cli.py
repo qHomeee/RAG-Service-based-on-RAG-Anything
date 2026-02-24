@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import importlib
 import importlib.metadata
 import inspect
@@ -9,6 +10,10 @@ import sys
 import traceback
 import types
 from contextlib import contextmanager
+
+# PyTorch >= 2.6 defaults torch.load(..., weights_only=True), which can break
+# YOLOv10 checkpoint loading used by doclayout_yolo during MinerU model init.
+os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
 
 
 def _build_parser() -> argparse.ArgumentParser:
