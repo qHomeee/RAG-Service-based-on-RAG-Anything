@@ -127,7 +127,7 @@ async def http_exc_handler(_: Request, exc: HTTPException) -> JSONResponse:
 
 @app.exception_handler(MineruUnavailableError)
 async def mineru_unavailable_handler(_: Request, exc: MineruUnavailableError) -> JSONResponse:
-    return JSONResponse(status_code=503, content={"error": str(exc)})
+    return JSONResponse(status_code=500, content={"error": str(exc)})
 
 
 @app.exception_handler(SQLAlchemyError)

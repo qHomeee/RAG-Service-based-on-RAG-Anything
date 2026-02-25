@@ -17,7 +17,7 @@ def test_logs_fallback_reason_when_mineru_empty(tmp_path, monkeypatch, caplog):
     sample = tmp_path / "sample.txt"
     sample.write_text("hello", encoding="utf-8")
 
-    monkeypatch.setattr("app.parser.check_mineru_ready", lambda _py: (True, "ok"))
+    monkeypatch.setattr("app.parser.check_mineru_env", lambda _py: (True, "ok"))
     monkeypatch.setattr("app.parser.resolve_mineru_python", lambda: Path("python"))
     monkeypatch.setattr(parser, "_run_mineru_subprocess", lambda *_args, **_kwargs: {"elements": []})
 
@@ -33,7 +33,7 @@ def test_logs_warning_when_mineru_throws(tmp_path, monkeypatch, caplog):
     sample = tmp_path / "sample.txt"
     sample.write_text("hello", encoding="utf-8")
 
-    monkeypatch.setattr("app.parser.check_mineru_ready", lambda _py: (True, "ok"))
+    monkeypatch.setattr("app.parser.check_mineru_env", lambda _py: (True, "ok"))
     monkeypatch.setattr("app.parser.resolve_mineru_python", lambda: Path("python"))
     monkeypatch.setattr(parser, "_run_mineru_subprocess", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
 
@@ -46,7 +46,7 @@ def test_logs_warning_when_mineru_throws(tmp_path, monkeypatch, caplog):
 
 
 def test_detect_cli_caps_without_json(monkeypatch):
-    def fake_run(cmd, capture_output, text, timeout, check):
+    def fake_run(cmd, capture_output, text, check=False, timeout=None, env=None):
         return _Proc(stdout="Usage: client [OPTIONS]\n  -p, --path TEXT\n  -o, --output TEXT\n  -m TEXT\n  -f TEXT\n  -t TEXT\n")
 
     monkeypatch.setattr("app.parser.subprocess.run", fake_run)
@@ -104,8 +104,9 @@ def test_mineru_subprocess_reads_output_dir_artifacts_recursively(tmp_path, monk
     )
     monkeypatch.setattr(parser, "_detect_mineru_cli_caps", lambda _python: caps)
     monkeypatch.setattr(settings, "storage_parsed", str(tmp_path / "parsed"))
+    monkeypatch.setenv("MINERU_PYTHON", "python")
 
-    def fake_run(cmd, capture_output, text, timeout, check):
+    def fake_run(cmd, capture_output, text, check=False, timeout=None, env=None):
         out_dir = Path(cmd[cmd.index("--output") + 1])
         nested = out_dir / "nested" / "level"
         nested.mkdir(parents=True, exist_ok=True)
@@ -130,7 +131,7 @@ def test_dependency_mismatch_retries_text_only(tmp_path, monkeypatch, caplog):
             raise RuntimeError("UnimerMBartForCausalLM.forward() got an unexpected keyword argument 'cache_position'")
         return {"elements": [{"type": "text", "text": "retry ok"}]}
 
-    monkeypatch.setattr("app.parser.check_mineru_ready", lambda _py: (True, "ok"))
+    monkeypatch.setattr("app.parser.check_mineru_env", lambda _py: (True, "ok"))
     monkeypatch.setattr("app.parser.resolve_mineru_python", lambda: Path("python"))
     monkeypatch.setattr(parser, "_run_mineru_subprocess", fake_run)
 
@@ -156,7 +157,7 @@ def test_nonzero_returncode_retries_once(tmp_path, monkeypatch):
             raise RuntimeError("mineru_returncode=2\nstderr=boom")
         return {"elements": [{"type": "text", "text": "retry ok"}]}
 
-    monkeypatch.setattr("app.parser.check_mineru_ready", lambda _py: (True, "ok"))
+    monkeypatch.setattr("app.parser.check_mineru_env", lambda _py: (True, "ok"))
     monkeypatch.setattr("app.parser.resolve_mineru_python", lambda: Path("python"))
     monkeypatch.setattr(parser, "_run_mineru_subprocess", fake_run)
     elements, reason = parser._parse_with_mineru(sample)
@@ -207,7 +208,7 @@ def test_mineru_uses_cached_output_when_not_reindex(tmp_path, monkeypatch):
 def test_check_mineru_runtime_logs_missing_dependency(monkeypatch, caplog):
     calls = []
 
-    def fake_run(cmd, capture_output, text, check=False, timeout=None):
+    def fake_run(cmd, capture_output, text, check=False, timeout=None, env=None):
         calls.append(cmd)
         return _Proc(returncode=1, stderr="ModuleNotFoundError: No module named 'torch'")
 
@@ -228,7 +229,7 @@ def test_mineru_run_and_validate_fails_on_traceback_even_zero_returncode(tmp_pat
     (out_dir / "nested").mkdir()
     (out_dir / "nested" / "result.md").write_text("ok", encoding="utf-8")
 
-    def fake_run(cmd, capture_output, text, timeout, check):
+    def fake_run(cmd, capture_output, text, check=False, timeout=None, env=None):
         return _Proc(returncode=0, stdout="", stderr="Traceback (most recent call last): boom")
 
     monkeypatch.setattr("app.parser.subprocess.run", fake_run)
@@ -251,7 +252,7 @@ def test_retry_runs_only_once_on_failure(tmp_path, monkeypatch):
         calls.append(text_only)
         raise RuntimeError("mineru_returncode=1\nstderr=ERROR")
 
-    monkeypatch.setattr("app.parser.check_mineru_ready", lambda _py: (True, "ok"))
+    monkeypatch.setattr("app.parser.check_mineru_env", lambda _py: (True, "ok"))
     monkeypatch.setattr("app.parser.resolve_mineru_python", lambda: Path("python"))
     monkeypatch.setattr(parser, "_run_mineru_subprocess", fake_run)
     elements, reason = parser._parse_with_mineru(sample)
@@ -266,7 +267,7 @@ def test_check_mineru_runtime_checks_doclayout_import(monkeypatch):
         _Proc(returncode=1, stderr="ModuleNotFoundError: No module named 'doclayout_yolo'"),
     ])
 
-    def fake_run(cmd, capture_output, text, check=False, timeout=None):
+    def fake_run(cmd, capture_output, text, check=False, timeout=None, env=None):
         return next(outputs)
 
     monkeypatch.setattr("app.parser.subprocess.run", fake_run)
@@ -281,7 +282,7 @@ def test_mineru_run_and_validate_detects_missing_module_mapping(tmp_path, monkey
     (out_dir / "nested").mkdir()
     (out_dir / "nested" / "result.md").write_text("ok", encoding="utf-8")
 
-    def fake_run(cmd, capture_output, text, timeout, check):
+    def fake_run(cmd, capture_output, text, check=False, timeout=None, env=None):
         return _Proc(returncode=0, stdout="", stderr="ModuleNotFoundError: No module named 'doclayout_yolo'")
 
     monkeypatch.setattr("app.parser.subprocess.run", fake_run)
@@ -308,7 +309,7 @@ def test_mineru_run_and_validate_fails_on_module_not_found_zero_returncode(tmp_p
     (out_dir / "nested").mkdir()
     (out_dir / "nested" / "result.md").write_text("ok", encoding="utf-8")
 
-    def fake_run(cmd, capture_output, text, timeout, check):
+    def fake_run(cmd, capture_output, text, check=False, timeout=None, env=None):
         return _Proc(returncode=0, stdout="", stderr="ModuleNotFoundError: No module named 'ultralytics'")
 
     monkeypatch.setattr("app.parser.subprocess.run", fake_run)
@@ -325,7 +326,7 @@ def test_parser_skips_mineru_when_doctor_missing_deps(tmp_path, monkeypatch):
     sample = tmp_path / "sample.txt"
     sample.write_text("fallback content", encoding="utf-8")
 
-    monkeypatch.setattr("app.parser.check_mineru_ready", lambda _py: (False, "ModuleNotFoundError: No module named ultralytics"))
+    monkeypatch.setattr("app.parser.check_mineru_env", lambda _py: (False, "ModuleNotFoundError: No module named ultralytics"))
     monkeypatch.setattr("app.parser.resolve_mineru_python", lambda: Path("python"))
 
     def should_not_run(*_args, **_kwargs):
@@ -341,7 +342,7 @@ def test_parser_skips_mineru_when_doctor_missing_deps(tmp_path, monkeypatch):
 def test_check_mineru_runtime_alias_kept(monkeypatch):
     calls = {"n": 0}
 
-    def fake_run(cmd, capture_output, text, check=False, timeout=None):
+    def fake_run(cmd, capture_output, text, check=False, timeout=None, env=None):
         calls["n"] += 1
         if calls["n"] == 1:
             return _Proc(returncode=0, stdout="ok", stderr="")
@@ -352,7 +353,7 @@ def test_check_mineru_runtime_alias_kept(monkeypatch):
 
 
 def test_mineru_doctor_reports_rapid_table_mapping(monkeypatch):
-    def fake_run(cmd, capture_output, text, check=False, timeout=None):
+    def fake_run(cmd, capture_output, text, check=False, timeout=None, env=None):
         return _Proc(returncode=1, stderr="ModuleNotFoundError: No module named 'rapid_table'")
 
     monkeypatch.setattr("app.parser.subprocess.run", fake_run)
@@ -367,7 +368,7 @@ def test_parse_file_falls_back_when_mineru_stderr_module_not_found(tmp_path, mon
     sample = tmp_path / "sample.txt"
     sample.write_text("fallback content", encoding="utf-8")
 
-    monkeypatch.setattr("app.parser.check_mineru_ready", lambda _py: (True, "ok"))
+    monkeypatch.setattr("app.parser.check_mineru_env", lambda _py: (True, "ok"))
     monkeypatch.setattr("app.parser.resolve_mineru_python", lambda: Path("python"))
 
     calls = {"n": 0}

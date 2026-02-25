@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
-from app.mineru_runner import MineruRunError, MineruUnavailableError, check_mineru_ready, extract_missing_module, resolve_mineru_python, run_mineru
+from app.mineru_runner import MineruRunError, MineruUnavailableError, check_mineru_env, extract_missing_module, resolve_mineru_python, run_mineru
 from app.schemas import ParsedElement
 from app.utils import normalize_text
 
@@ -26,6 +26,9 @@ MINERU_MODULE_TO_PACKAGE = {
     "ultralytics": "ultralytics",
     "torch": "torch",
     "rapid_table": "rapid-table",
+    "pyclipper": "pyclipper",
+    "shapely": "shapely",
+    "dill": "dill",
 }
 
 
@@ -185,11 +188,11 @@ class RAGAnythingParser:
 
     def _parse_with_mineru(self, path: Path, reindex: bool = False) -> tuple[list[dict] | None, str]:
         mineru_py = resolve_mineru_python()
-        ok, detail = check_mineru_ready(mineru_py)
+        ok, detail = check_mineru_env(mineru_py)
         if not ok:
-            raise MineruUnavailableError(
-                "MinerU runtime is not ready. Install dependencies in .venv-mineru: pip install -r requirements-mineru.txt"
-            )
+            missing = _extract_missing_module(detail) or "unknown"
+            logger.error("Mineru dependency missing", extra={"missing_module": missing, "mineru_python": str(mineru_py), "stderr_tail": detail[-4000:]})
+            raise MineruUnavailableError(f"Mineru dependency missing: {missing}")
 
         try:
             result = self._run_mineru_subprocess(path, text_only=False, reindex=reindex)
@@ -434,7 +437,6 @@ def mineru_run_and_validate(*, cmd: list[str], output_dir: Path, source_path: Pa
         cmd,
         capture_output=True,
         text=True,
-        timeout=settings.mineru_timeout_seconds,
         check=False,
     )
 

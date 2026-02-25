@@ -37,8 +37,8 @@ class Settings(BaseSettings):
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     parser_fallback_alert_threshold: float = 0.3
 
-    mineru_python: str = r".venv-mineru\Scripts\python.exe"
-    mineru_timeout_seconds: int = 180
+    mineru_python: str | None = None
+    mineru_timeout_seconds: int | None = None
 
     ingest_path_must_be_under_storage_raw: bool = True
     rate_limit_per_minute: int = 120

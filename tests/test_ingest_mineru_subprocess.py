@@ -42,7 +42,7 @@ def test_ingest_pipeline_uses_mineru_subprocess_output(tmp_path, monkeypatch):
         assert text_only is False
         return {"elements": [{"type": "text", "text": "Заголовок\n\nТекст документа", "page": 1}]}
 
-    monkeypatch.setattr("app.parser.check_mineru_ready", lambda _py: (True, "ok"))
+    monkeypatch.setattr("app.parser.check_mineru_env", lambda _py: (True, "ok"))
     monkeypatch.setattr("app.parser.resolve_mineru_python", lambda: Path("python"))
     monkeypatch.setattr(parser, "_run_mineru_subprocess", fake_run_mineru)
 

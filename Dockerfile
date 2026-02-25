@@ -18,7 +18,7 @@ RUN python -m venv /app/.venv-mineru && \
 
 COPY . .
 
-ENV MINERU_PY=/app/.venv-mineru/bin/python
+ENV MINERU_PYTHON=/app/.venv-mineru/bin/python
 ENV DISABLE_MINERU_LLM=1
 ENV PYTHONPATH=/app
 

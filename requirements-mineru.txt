@@ -6,3 +6,5 @@ doclayout-yolo
 rapid-table
 shapely
 fast-langdetect
+dill
+pyclipper

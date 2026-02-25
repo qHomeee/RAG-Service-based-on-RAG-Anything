@@ -340,13 +340,14 @@ curl -X POST http://localhost:8000/sources -H "Content-Type: application/json" -
   3. `pip install git+https://github.com/HKUDS/RAG-Anything.git`
 - For minimal text/PDF/docx ingestion, image-specific packages can be treated as optional if your deployment does not process image OCR/caption pipelines.
 - Newer releases may expose package name/layout as `raganything` (without underscore) and different internal modules; this service now auto-detects supported parser entrypoints across known layouts.
-- MinerU now runs via a separate python process (`MINERU_PYTHON`) so core dependencies remain conflict-free.
+- MinerU runs only via `MINERU_PYTHON` (required). If it is unset, `/ingest` fails fast with a configuration error so the runtime is explicit and reproducible.
 - MinerU CLI flags vary by version; service auto-detects supported options via `--help` and reads parsing artifacts from `output_dir` when `--json` is unavailable.
 - MinerU readiness is checked only when parsing PDF, not during FastAPI startup. If `.venv-mineru` is missing/broken, API returns `503` with remediation (`pip install -r requirements-mineru.txt` in `.venv-mineru`).
 - During MinerU execution, `ModuleNotFoundError` is auto-detected from stderr and logged as `mineru_missing_dependency_detected` with module→package hints (for example `doclayout_yolo -> doclayout-yolo`, `fast_langdetect -> fast-langdetect`, `ultralytics -> ultralytics`, `rapid_table -> rapid-table`).
 - Missing MinerU dependencies are never auto-installed at runtime; keep `.venv-mineru` reproducible and reinstall it with `pip install -r requirements-mineru.txt` after dependency changes.
+- Before parsing, service performs fail-fast import check in `.venv-mineru` (`dill, shapely, pyclipper, torch, transformers`) and returns an error immediately when something is missing.
 - LLM-aided title enhancement is disabled by default (`DISABLE_MINERU_LLM=1`) and falls back to identity title function, so `openai` package is not required for MinerU pipeline execution.
-- MinerU run success is validated by return code, stderr patterns (`Traceback`, `ModuleNotFoundError`, `ERROR`), and non-empty recursive artifacts; failures trigger one text-only retry before fallback.
+- MinerU subprocess execution has no default timeout (supports long CPU parsing for large PDFs); success is validated by return code, stderr patterns (`Traceback`, `ModuleNotFoundError`, `ERROR`), and non-empty recursive artifacts; failures may trigger one text-only retry before fallback.
 - MinerU + transformers incompatibility (`cache_position`): if logs show `UnimerMBartForCausalLM.forward() got an unexpected keyword argument 'cache_position'`, pin transformers to MinerU-compatible version and restart service:
   1. `pip install "transformers==4.35.0"`
   2. restart API process (`uvicorn`/systemd).
