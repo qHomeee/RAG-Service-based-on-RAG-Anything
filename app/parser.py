@@ -468,49 +468,6 @@ def mineru_run_and_validate(*, cmd: list[str], output_dir: Path, source_path: Pa
             },
         )
 
-    if (proc.returncode != 0 or stderr_fail) and missing_module and settings.auto_install_mineru_deps and settings.app_env.lower() not in {"prod", "production"}:
-        package = _module_to_package(missing_module)
-        if package:
-            install_cmd = [settings.mineru_python, "-m", "pip", "install", package]
-            install = subprocess.run(install_cmd, capture_output=True, text=True, check=False)
-            logger.warning(
-                "mineru_dependency_auto_install_attempt",
-                extra={
-                    "missing_module": missing_module,
-                    "package": package,
-                    "returncode": install.returncode,
-                    "stdout_tail": (install.stdout or "")[-1000:],
-                    "stderr_tail": (install.stderr or "")[-1000:],
-                },
-            )
-            if install.returncode == 0:
-                retry = subprocess.run(cmd, capture_output=True, text=True, timeout=settings.mineru_timeout_seconds, check=False)
-                rstdout = (retry.stdout or "").strip()
-                rstderr = (retry.stderr or "").strip()
-                logger.warning(
-                    "mineru_dependency_auto_install_retry",
-                    extra={
-                        "missing_module": missing_module,
-                        "returncode": retry.returncode,
-                        "stdout_tail": rstdout[-1000:],
-                        "stderr_tail": rstderr[-1000:],
-                    },
-                )
-                if retry.returncode == 0 and not _stderr_indicates_failure(rstderr):
-                    retry_files = _collect_output_files(output_dir)
-                    if retry_files:
-                        logger.info(
-                            "mineru_output_files",
-                            extra={
-                                "path": str(source_path),
-                                "output_dir": str(output_dir),
-                                "count": len(retry_files),
-                                "files": [str(file.relative_to(output_dir)) for file in retry_files[:30]],
-                                "auto_install_retry": True,
-                            },
-                        )
-                        return retry_files
-
     if proc.returncode != 0 or stderr_fail:
         logger.error(
             "mineru_execution_error",
