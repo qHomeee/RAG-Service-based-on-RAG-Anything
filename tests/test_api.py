@@ -131,6 +131,9 @@ def test_readyz_endpoint_shape():
     body = response.json()
     assert "status" in body
     assert "checks" in body
+    assert "reranker_loaded" in body["checks"]
+    assert "reranker_model" in body["checks"]
+    assert "reranker_error" in body["checks"]
 
 
 

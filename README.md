@@ -60,6 +60,10 @@ APP_ENV=production
 INGEST_PATH_MUST_BE_UNDER_STORAGE_RAW=true
 RATE_LIMIT_PER_MINUTE=120
 UVICORN_WORKERS=2
+VECTOR_RECALL_TOP_N=120
+RERANK_TOP_N=40
+HYBRID_VECTOR_WEIGHT=0.6
+QUERY_EXPANSION_ENABLED=true
 DISABLE_MINERU_LLM=1
 ```
 
@@ -94,7 +98,7 @@ pip install -r requirements-mineru.txt
 # pip install -r requirements-mineru.txt -c constraints-mineru.txt
 ```
 
-`requirements-mineru.txt` intentionally contains runtime-critical dependencies (`mineru`, `torch`, `transformers`, `ultralytics`, `doclayout-yolo`, `rapid-table`, `shapely`, `fast-langdetect`) so `.venv-mineru` is self-sufficient.
+`requirements-mineru.txt` intentionally contains runtime-critical dependencies (`mineru`, `torch`, `transformers`, `ultralytics`, `doclayout-yolo`, `rapid-table`, `shapely`, `pyclipper`, `dill`, `fast-langdetect`) so `.venv-mineru` is self-sufficient.
 
 
 Ubuntu / VPS setup for MinerU venv:
@@ -182,6 +186,30 @@ k6 run scripts/loadtest/k6_retrieve.js
 ```
 
 The k6 script includes threshold checks for `p95`, `p99`, and error rate.
+
+
+## Retrieval quality tuning
+
+Current defaults are tuned for better recall on long/noisy corpora:
+
+- `VECTOR_RECALL_TOP_N=120`
+- `RERANK_TOP_N=40`
+- `HYBRID_VECTOR_WEIGHT=0.6`
+- `QUERY_EXPANSION_ENABLED=true`
+
+How it works:
+
+1. vector recall gets top-N candidate fragments in pgvector space;
+2. BM25 lexical score is computed over candidates;
+3. hybrid score blends vector+BM25 using `HYBRID_VECTOR_WEIGHT`;
+4. top candidates are reranked by cross-encoder (if loaded).
+
+If cross-encoder fails to load, logs include `cross_encoder_unavailable`, and `/readyz` reports:
+- `checks.reranker_loaded`
+- `checks.reranker_model`
+- `checks.reranker_error`
+
+Query expansion is lightweight and dictionary-based (RU-oriented terms like `инфляция`, `ввп`, `налог`, `стили`) and is applied before embedding/BM25 when `QUERY_EXPANSION_ENABLED=true`.
 
 ## API examples
 
@@ -348,6 +376,7 @@ curl -X POST http://localhost:8000/sources -H "Content-Type: application/json" -
 - Before parsing, service performs fail-fast import check in `.venv-mineru` (`dill, shapely, pyclipper, torch, transformers`) and returns an error immediately when something is missing.
 - LLM-aided title enhancement is disabled by default (`DISABLE_MINERU_LLM=1`) and falls back to identity title function, so `openai` package is not required for MinerU pipeline execution.
 - MinerU subprocess execution has no default timeout (supports long CPU parsing for large PDFs); success is validated by return code, stderr patterns (`Traceback`, `ModuleNotFoundError`, `ERROR`), and non-empty recursive artifacts; failures may trigger one text-only retry before fallback.
+- Retrieval quality is controlled by `VECTOR_RECALL_TOP_N`, `RERANK_TOP_N`, `HYBRID_VECTOR_WEIGHT`, and `QUERY_EXPANSION_ENABLED`; adjust these for your corpus size/domain.
 - MinerU + transformers incompatibility (`cache_position`): if logs show `UnimerMBartForCausalLM.forward() got an unexpected keyword argument 'cache_position'`, pin transformers to MinerU-compatible version and restart service:
   1. `pip install "transformers==4.35.0"`
   2. restart API process (`uvicorn`/systemd).

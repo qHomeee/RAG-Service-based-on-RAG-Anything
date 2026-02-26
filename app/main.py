@@ -162,7 +162,8 @@ def readyz(request: Request, db: Session = Depends(get_db)) -> dict:
 
     parser_loaded = getattr(request.app.state, "parser", None) is not None
     embeddings_loaded = getattr(request.app.state, "embeddings", None) is not None and not request.app.state.embeddings.using_fallback
-    reranker_loaded = getattr(request.app.state, "reranker", None) is not None and request.app.state.reranker.available
+    reranker_obj = getattr(request.app.state, "reranker", None)
+    reranker_loaded = reranker_obj is not None and reranker_obj.available
 
     ready = all([db_ok, pgvector_ok, parser_loaded, embeddings_loaded, reranker_loaded])
     return {
@@ -173,6 +174,8 @@ def readyz(request: Request, db: Session = Depends(get_db)) -> dict:
             "parser_loaded": parser_loaded,
             "embeddings_loaded": embeddings_loaded,
             "reranker_loaded": reranker_loaded,
+            "reranker_model": getattr(reranker_obj, "model_name", None),
+            "reranker_error": getattr(reranker_obj, "load_error", None),
         },
     }
 

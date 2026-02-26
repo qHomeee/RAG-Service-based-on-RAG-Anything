@@ -1,3 +1,4 @@
+import logging
 import math
 import re
 from collections import Counter
@@ -12,6 +13,8 @@ from app.embeddings import EmbeddingProvider
 from app.models import Document, Embedding, Fragment
 from app.reranker import CrossEncoderReranker
 from app.schemas import CanonicalFragment
+
+logger = logging.getLogger("rag_service")
 
 
 @dataclass
@@ -94,7 +97,8 @@ class RagRepository:
         collection: str,
         source_uris: list[str] | None,
     ) -> list[RetrievalRow]:
-        qvec = self.embeddings.embed(query)
+        expanded_query = _expand_query(query)
+        qvec = self.embeddings.embed(expanded_query)
         recall_top_n = max(top_k, settings.vector_recall_top_n)
 
         source_clause = ""
@@ -148,7 +152,7 @@ class RagRepository:
             for row in rows
         ]
 
-        query_terms = _tokenize(query)
+        query_terms = _tokenize(expanded_query)
         if query_terms:
             bm25_scores = _bm25_scores(query_terms, recall_candidates)
         else:
@@ -170,6 +174,7 @@ class RagRepository:
         if self.reranker.available:
             rerank_scores = self.reranker.score(query, [item[0].text for item in rerank_candidates])
         else:
+            logger.warning("reranker_unavailable_fallback", extra={"reranker_model": self.reranker.model_name, "error": self.reranker.load_error})
             rerank_scores = [score for _, score in rerank_candidates]
 
         rescored: list[RetrievalRow] = []
@@ -202,6 +207,38 @@ def _vector_literal(values: list[float]) -> str:
 
 def _tokenize(text: str) -> list[str]:
     return re.findall(r"[\w-]+", (text or "").lower())
+
+
+QUERY_SYNONYMS: dict[str, list[str]] = {
+    "инфляция": ["рост цен", "индекс потребительских цен", "обесценивание"],
+    "ввп": ["валовой внутренний продукт", "gdp"],
+    "стили": ["стиль", "жанр", "речь"],
+    "налог": ["налогообложение", "сбор", "пошлина"],
+}
+
+
+def _expand_query(query: str) -> str:
+    if not settings.query_expansion_enabled:
+        return query
+
+    base_terms = _tokenize(query)
+    extras: list[str] = []
+    for term in base_terms:
+        extras.extend(QUERY_SYNONYMS.get(term, []))
+
+    if not extras:
+        return query
+
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for piece in [query, *extras]:
+        norm = piece.strip().lower()
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        deduped.append(piece.strip())
+
+    return " ".join(deduped)
 
 
 def _bm25_scores(query_terms: list[str], rows: list[RetrievalRow], *, k1: float = 1.5, b: float = 0.75) -> dict[str, float]:

@@ -10,17 +10,28 @@ class CrossEncoderReranker:
     def __init__(self) -> None:
         self._model = None
         self._lock = threading.Lock()
+        self._load_error: str | None = None
+        self.model_name = settings.reranker_model
         try:
             from sentence_transformers import CrossEncoder
 
             self._model = CrossEncoder(settings.reranker_model)
-        except Exception:
+            logger.info("cross_encoder_loaded", extra={"reranker_model": settings.reranker_model})
+        except Exception as exc:
             self._model = None
-            logger.warning("cross_encoder_unavailable", extra={"reranker_model": settings.reranker_model})
+            self._load_error = str(exc)
+            logger.warning(
+                "cross_encoder_unavailable",
+                extra={"reranker_model": settings.reranker_model, "error": self._load_error},
+            )
 
     @property
     def available(self) -> bool:
         return self._model is not None
+
+    @property
+    def load_error(self) -> str | None:
+        return self._load_error
 
     def score(self, query: str, passages: list[str]) -> list[float]:
         if not passages:
