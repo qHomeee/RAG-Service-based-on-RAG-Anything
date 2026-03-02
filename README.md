@@ -211,6 +211,53 @@ If cross-encoder fails to load, logs include `cross_encoder_unavailable`, and `/
 
 Query expansion is lightweight and dictionary-based (RU-oriented terms like `инфляция`, `ввп`, `налог`, `стили`) and is applied before embedding/BM25 when `QUERY_EXPANSION_ENABLED=true`.
 
+
+## VPS deployment with Docker (app + Postgres)
+
+1. Copy env template and set secrets:
+
+```bash
+cp .env.docker.example .env.docker
+# edit .env.docker: set API_KEY / ADMIN_API_KEY
+```
+
+2. Build and start services:
+
+```bash
+docker compose -f docker-compose.vps.yml --env-file .env.docker up -d --build
+```
+
+3. Check status and logs:
+
+```bash
+docker compose -f docker-compose.vps.yml ps
+docker compose -f docker-compose.vps.yml logs -f app
+```
+
+4. Verify API:
+
+```bash
+curl http://localhost:8000/healthz -H "X-API-Key: <YOUR_API_KEY>"
+```
+
+### Change number of workers
+
+You can change uvicorn workers without rebuilding image:
+
+- edit `.env.docker` and set `UVICORN_WORKERS` (for example `4`), then restart app:
+
+```bash
+docker compose -f docker-compose.vps.yml --env-file .env.docker up -d app
+```
+
+- or override for one run:
+
+```bash
+UVICORN_WORKERS=4 docker compose -f docker-compose.vps.yml --env-file .env.docker up -d app
+```
+
+The container command uses `--workers ${UVICORN_WORKERS:-2}`.
+
 ## API examples
 
 ### Health
