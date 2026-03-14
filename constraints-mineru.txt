@@ -1,0 +1,2 @@
+# Optional pinned constraints for MinerU venv reproducibility in Docker/VPS.
+# Use with: pip install -r requirements-mineru.txt -c constraints-mineru.txt
