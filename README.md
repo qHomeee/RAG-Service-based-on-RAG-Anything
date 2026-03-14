@@ -360,6 +360,34 @@ curl -X POST http://localhost:8000/ingest -H "Content-Type: application/json" -H
 curl -X POST http://localhost:8000/retrieve -H "Content-Type: application/json" -H "X-API-Key: super-secret-key" -d "{\"query\":\"тема урока: стили речи\",\"top_k\":3,\"min_score\":0.45,\"collection\":\"default\"}"
 ```
 
+Рекомендуемые one-line варианты для **подбора более точных фрагментов** (Windows CMD):
+
+1) **Базовый balanced-поиск** (хорошая стартовая точка):
+
+```bat
+curl -X POST http://localhost:8000/retrieve -H "Content-Type: application/json" -H "X-API-Key: super-secret-key" -d "{\"query\":\"тема урока: османская империя\",\"top_k\":8,\"min_score\":0.25,\"collection\":\"default\",\"return_text\":true}"
+```
+
+2) **Узкий поиск по конкретному учебнику** (`source_uris` снижает шум):
+
+```bat
+curl -X POST http://localhost:8000/retrieve -H "Content-Type: application/json" -H "X-API-Key: super-secret-key" -d "{\"query\":\"тема урока: османская империя\",\"top_k\":8,\"min_score\":0.2,\"collection\":\"default\",\"source_uris\":[\"Russkiy_yazyk_2019.pdf\"],\"return_text\":true}"
+```
+
+3) **Широкий recall для сложной темы** (больше кандидатов под rerank):
+
+```bat
+curl -X POST http://localhost:8000/retrieve -H "Content-Type: application/json" -H "X-API-Key: super-secret-key" -d "{\"query\":\"османская империя реформы танзим султан стамбул\",\"top_k\":15,\"min_score\":0.15,\"collection\":\"default\",\"return_text\":true}"
+```
+
+4) **Строгий режим** (если хотите меньше, но точнее):
+
+```bat
+curl -X POST http://localhost:8000/retrieve -H "Content-Type: application/json" -H "X-API-Key: super-secret-key" -d "{\"query\":\"османская империя\",\"top_k\":5,\"min_score\":0.4,\"collection\":\"default\",\"return_text\":true}"
+```
+
+Практика: сначала используйте balanced/recall-вариант, потом ужесточайте `min_score` и/или добавляйте `source_uris`.
+
 Ответ (пример):
 
 ```json
