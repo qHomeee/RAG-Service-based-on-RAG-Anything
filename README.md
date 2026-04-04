@@ -224,6 +224,8 @@ How it works:
 7. keyword relevance rerank applies topic marker penalties/bonuses;
 8. final grounded context in `/query` is limited by `RAG_FINAL_TOP_K`.
 
+`/retrieve` now returns full fragment content in `hits[].snippet` (legacy field name kept for compatibility).
+
 If cross-encoder fails to load, logs include `cross_encoder_unavailable`, and `/readyz` reports:
 - `checks.reranker_loaded`
 - `checks.reranker_model`
