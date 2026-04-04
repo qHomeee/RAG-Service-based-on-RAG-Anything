@@ -64,6 +64,13 @@ VECTOR_RECALL_TOP_N=120
 RERANK_TOP_N=40
 HYBRID_VECTOR_WEIGHT=0.6
 QUERY_EXPANSION_ENABLED=true
+QUERY_SYNONYMS_BY_COLLECTION={}
+TOPIC_EXPANSIONS_BY_COLLECTION={}
+QUERY_SYNONYMS_BY_DOMAIN={}
+TOPIC_EXPANSIONS_BY_DOMAIN={}
+SEMANTIC_CHUNKING_ENABLED=true
+SEMANTIC_TABLE_CHUNK_MAX_CHARS=700
+SEMANTIC_FAQ_CHUNK_MAX_CHARS=900
 DISABLE_MINERU_LLM=1
 ```
 
@@ -170,6 +177,12 @@ python scripts/run_quality_eval.py --eval-set eval_set.json --collection default
 
 The report includes per-query and mean `Recall@k` / `nDCG@k` for regression monitoring.
 
+Hyperparameter tuning (grid search for `HYBRID_VECTOR_WEIGHT`, `VECTOR_RECALL_TOP_N`, `RERANK_TOP_N`):
+
+```bash
+python scripts/tune_retrieval.py --eval-set eval_set.json --collection default --top-k 10
+```
+
 
 ## Load testing
 
@@ -197,6 +210,8 @@ Current defaults are tuned for better recall on long/noisy corpora:
 - `RAG_FINAL_TOP_K=5`
 - `HYBRID_VECTOR_WEIGHT=0.6`
 - `QUERY_EXPANSION_ENABLED=true`
+- `QUERY_SYNONYMS_BY_COLLECTION / TOPIC_EXPANSIONS_BY_COLLECTION`
+- `QUERY_SYNONYMS_BY_DOMAIN / TOPIC_EXPANSIONS_BY_DOMAIN`
 
 How it works:
 
@@ -214,13 +229,27 @@ If cross-encoder fails to load, logs include `cross_encoder_unavailable`, and `/
 - `checks.reranker_model`
 - `checks.reranker_error`
 
-Query expansion is lightweight and dictionary-based (RU-oriented terms like `инфляция`, `ввп`, `налог`, `стили`, and historical topics such as `османская империя`) and is applied before embedding/BM25 when `QUERY_EXPANSION_ENABLED=true`.
+Query expansion is dictionary-based and configurable via env JSON:
+- global defaults: `QUERY_SYNONYMS_DEFAULT`, `TOPIC_EXPANSIONS_DEFAULT`;
+- collection-level overrides: `QUERY_SYNONYMS_BY_COLLECTION`, `TOPIC_EXPANSIONS_BY_COLLECTION`;
+- domain-level overrides (based on `source_uris` host): `QUERY_SYNONYMS_BY_DOMAIN`, `TOPIC_EXPANSIONS_BY_DOMAIN`.
+
+Semantic chunking can adapt chunk boundaries for table-like and FAQ-like blocks via:
+- `SEMANTIC_CHUNKING_ENABLED`
+- `SEMANTIC_TABLE_CHUNK_MAX_CHARS`
+- `SEMANTIC_FAQ_CHUNK_MAX_CHARS`
 
 For retrieval diagnostics, debug logs include:
 - original and normalized query;
 - expanded query variants;
 - raw hits count, deduplicated hits, post-keyword-rerank hits;
 - final selected hit count.
+
+When reranker is unavailable during retrieval, service emits both:
+- `reranker_unavailable_fallback`
+- `reranker_unavailable_fallback_alert`
+
+Use `/readyz` checks `reranker_loaded` and `reranker_error` as monitoring signals.
 
 
 ## VPS deployment with Docker (app + Postgres)

@@ -25,3 +25,20 @@ def test_recall_and_ndcg_metrics():
 
     assert recall_at_k(retrieved, relevant, 2) == 0.5
     assert ndcg_at_k(retrieved, graded, 3) > 0
+
+
+def test_semantic_chunking_splits_table_like_blocks_more_aggressively():
+    table_text = """
+# Данные
+
+| Год | Значение |
+| --- | --- |
+| 2020 | 10 |
+| 2021 | 20 |
+| 2022 | 30 |
+| 2023 | 40 |
+| 2024 | 50 |
+"""
+    chunks = split_structured_chunks(table_text, min_size=300, max_size=1200)
+    assert len(chunks) >= 1
+    assert all(len(chunk.text) <= 700 for chunk in chunks)

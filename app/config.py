@@ -29,12 +29,30 @@ class Settings(BaseSettings):
     chunk_overlap: int = 180
     adaptive_chunk_min_chars: int = 800
     adaptive_chunk_max_chars: int = 1200
+    semantic_chunking_enabled: bool = True
+    semantic_table_chunk_max_chars: int = 700
+    semantic_faq_chunk_max_chars: int = 900
 
     vector_recall_top_n: int = 120
     rerank_top_n: int = 40
     rag_final_top_k: int = 5
     hybrid_vector_weight: float = 0.6
     query_expansion_enabled: bool = True
+    query_synonyms_default: dict[str, list[str]] = {
+        "инфляция": ["рост цен", "индекс потребительских цен", "обесценивание"],
+        "ввп": ["валовой внутренний продукт", "gdp"],
+        "стили": ["стиль", "жанр", "речь"],
+        "налог": ["налогообложение", "сбор", "пошлина"],
+    }
+    topic_expansions_default: dict[str, list[str]] = {
+        "османская империя": ["осман", "турция", "султан", "танзим", "стамбул", "порта", "19 век", "упадок"],
+        "римская империя": ["рим", "цезарь", "сенат", "легион", "провинция", "античность"],
+        "первая мировая": ["1914", "антанта", "центральные державы", "окопная война", "верден"],
+    }
+    query_synonyms_by_collection: dict[str, dict[str, list[str]]] = {}
+    topic_expansions_by_collection: dict[str, dict[str, list[str]]] = {}
+    query_synonyms_by_domain: dict[str, dict[str, list[str]]] = {}
+    topic_expansions_by_domain: dict[str, dict[str, list[str]]] = {}
 
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     parser_fallback_alert_threshold: float = 0.3
