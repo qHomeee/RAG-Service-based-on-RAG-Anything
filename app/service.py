@@ -1,11 +1,15 @@
+import logging
 from pathlib import Path
 
+from app.chunking import split_structured_chunks
+from app.config import settings
 from app.parser import RAGAnythingParser
 from app.repository import RagRepository
-from app.schemas import CanonicalFragment, QueryResponse, Source
+from app.schemas import CanonicalFragment, QueryResponse, Source, SourceInfo
 from app.utils import snippet_from_text, stable_fragment_id
 
 SUPPORTED_EXTENSIONS = {".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".txt", ".md", ".png", ".jpg", ".jpeg"}
+logger = logging.getLogger("rag_service")
 
 
 class RagService:
@@ -18,27 +22,63 @@ class RagService:
         files = [p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS]
 
         indexed_docs = indexed_fragments = indexed_vectors = 0
+        fallback_docs = 0
         for file_path in files:
             source_uri = str(file_path.relative_to(root)).replace("\\", "/")
-            doc = self.repository.upsert_document(source_uri, file_path.name, collection, {"path": str(file_path)}, reindex)
+            parsed, parse_mode = self.parser.parse_file_with_mode(source_uri=source_uri, path=file_path, reindex=reindex)
+            if parse_mode == "fallback":
+                fallback_docs += 1
+
+            doc = self.repository.upsert_document(
+                source_uri,
+                file_path.name,
+                collection,
+                {"path": str(file_path), "parse_mode": parse_mode},
+                reindex,
+            )
             indexed_docs += 1
-            parsed = self.parser.parse_file(source_uri=source_uri, path=file_path)
+
             for elem in parsed:
-                fragment_id = stable_fragment_id(source_uri, elem.element_index, elem.content)
-                fragment = CanonicalFragment(
-                    fragment_id=fragment_id,
-                    element_index=elem.element_index,
-                    source_uri=source_uri,
-                    type=elem.type,
-                    page=elem.page,
-                    text=elem.content,
-                    snippet=snippet_from_text(elem.content),
-                    meta=elem.meta,
-                )
-                vectors = self.repository.insert_fragment_with_embeddings(doc, fragment)
-                if vectors > 0:
-                    indexed_fragments += 1
-                    indexed_vectors += vectors
+                structured_chunks = split_structured_chunks(elem.content)
+                if not structured_chunks:
+                    continue
+
+                for chunk_idx, chunk in enumerate(structured_chunks):
+                    fragment_id = stable_fragment_id(source_uri, elem.element_index * 10_000 + chunk_idx, chunk.text)
+                    meta = dict(elem.meta)
+                    meta["heading_path"] = chunk.heading_path
+                    fragment = CanonicalFragment(
+                        fragment_id=fragment_id,
+                        element_index=elem.element_index,
+                        source_uri=source_uri,
+                        type=elem.type,
+                        page=elem.page,
+                        text=chunk.text,
+                        snippet=snippet_from_text(chunk.text),
+                        meta=meta,
+                    )
+                    vectors = self.repository.insert_fragment_with_embeddings(doc, fragment)
+                    if vectors > 0:
+                        indexed_fragments += 1
+                        indexed_vectors += vectors
+
+        fallback_ratio = (fallback_docs / indexed_docs) if indexed_docs else 0.0
+        logger.info(
+            "parser_observability",
+            extra={
+                "indexed_docs": indexed_docs,
+                "fallback_docs": fallback_docs,
+                "fallback_ratio": round(fallback_ratio, 4),
+            },
+        )
+        if fallback_ratio > settings.parser_fallback_alert_threshold:
+            logger.warning(
+                "parser_fallback_ratio_alert",
+                extra={
+                    "fallback_ratio": round(fallback_ratio, 4),
+                    "threshold": settings.parser_fallback_alert_threshold,
+                },
+            )
 
         self.repository.db.commit()
         return {
@@ -47,8 +87,16 @@ class RagService:
             "indexed_vectors": indexed_vectors,
         }
 
-    def retrieve(self, query: str, top_k: int, min_score: float, collection: str, return_text: bool) -> list[dict]:
-        rows = self.repository.retrieve(query, top_k, min_score, collection)
+    def retrieve(
+        self,
+        query: str,
+        top_k: int,
+        min_score: float,
+        collection: str,
+        source_uris: list[str] | None,
+        return_text: bool,
+    ) -> list[dict]:
+        rows = self.repository.retrieve(query, top_k, min_score, collection, source_uris)
         return [
             {
                 "fragment_id": r.fragment_id,
@@ -63,8 +111,16 @@ class RagService:
             for r in rows
         ]
 
-    def query(self, query: str, top_k: int, min_score: float, collection: str) -> QueryResponse:
-        hits = self.retrieve(query, top_k, min_score, collection, return_text=False)
+    def query(
+        self,
+        query: str,
+        top_k: int,
+        min_score: float,
+        collection: str,
+        source_uris: list[str] | None,
+    ) -> QueryResponse:
+        final_top_k = min(top_k, settings.rag_final_top_k)
+        hits = self.retrieve(query, final_top_k, min_score, collection, source_uris, return_text=False)
         if not hits:
             return QueryResponse(answer="Недостаточно данных в источниках.", sources=[])
 
@@ -83,3 +139,7 @@ class RagService:
         bullets = "\n".join([f"[{s.n}] {s.snippet}" for s in sources[:3]])
         answer = f"Найденные подтверждённые фрагменты:\n{bullets}"
         return QueryResponse(answer=answer, sources=sources)
+
+    def list_sources(self, collection: str) -> list[SourceInfo]:
+        rows = self.repository.list_sources(collection)
+        return [SourceInfo(source_uri=row.source_uri, title=row.title) for row in rows]

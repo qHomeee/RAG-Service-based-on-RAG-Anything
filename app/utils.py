@@ -1,4 +1,5 @@
 import hashlib
+import math
 import re
 
 
@@ -24,11 +25,13 @@ def stable_fragment_id(source_uri: str, element_index: int, content: str) -> str
 
 
 def cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
-    if not vec_a or not vec_b or len(vec_a) != len(vec_b):
+    if vec_a is None or vec_b is None:
         return 0.0
-    dot = sum(a * b for a, b in zip(vec_a, vec_b))
-    na = sum(a * a for a in vec_a) ** 0.5
-    nb = sum(b * b for b in vec_b) ** 0.5
+    if len(vec_a) == 0 or len(vec_b) == 0 or len(vec_a) != len(vec_b):
+        return 0.0
+    dot = sum(float(a) * float(b) for a, b in zip(vec_a, vec_b))
+    na = math.sqrt(sum(float(a) * float(a) for a in vec_a))
+    nb = math.sqrt(sum(float(b) * float(b) for b in vec_b))
     if na == 0 or nb == 0:
         return 0.0
     return dot / (na * nb)

@@ -20,6 +20,7 @@ class RetrieveRequest(BaseModel):
     top_k: int = 12
     min_score: float = 0.2
     collection: str = "default"
+    source_uris: list[str] | None = None
     return_text: bool = False
 
 
@@ -46,6 +47,20 @@ class QueryRequest(BaseModel):
     citation_style: str = "fragments"
     return_sources: bool = True
     collection: str = "default"
+    source_uris: list[str] | None = None
+
+
+class SourcesRequest(BaseModel):
+    collection: str = "default"
+
+
+class SourceInfo(BaseModel):
+    source_uri: str
+    title: str | None = None
+
+
+class SourcesResponse(BaseModel):
+    sources: list[SourceInfo]
 
 
 class Source(BaseModel):
