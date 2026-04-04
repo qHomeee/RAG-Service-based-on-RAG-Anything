@@ -13,6 +13,8 @@ class StructuredChunk:
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+")
+_TABLE_LINE_RE = re.compile(r"\|.+\||\t+| {3,}")
+_FAQ_LINE_RE = re.compile(r"^(q:|question:|вопрос:|a:|answer:|ответ:)", re.IGNORECASE)
 
 
 def split_to_subchunks(text: str, chunk_size: int | None = None, overlap: int | None = None) -> list[str]:
@@ -56,7 +58,8 @@ def split_structured_chunks(
         if not merged:
             buffer.clear()
             return
-        for part in _split_without_breaking_sentences(merged, min_size=min_size, max_size=max_size):
+        local_min_size, local_max_size = _semantic_chunk_bounds(merged, min_size=min_size, max_size=max_size)
+        for part in _split_without_breaking_sentences(merged, min_size=local_min_size, max_size=local_max_size):
             chunks.append(StructuredChunk(text=part, heading_path=list(heading_path)))
         buffer.clear()
 
@@ -111,3 +114,18 @@ def _split_without_breaking_sentences(text: str, *, min_size: int, max_size: int
         else:
             chunks.append(buf)
     return [normalize_text(c) for c in chunks if c.strip()]
+
+
+def _semantic_chunk_bounds(text: str, *, min_size: int, max_size: int) -> tuple[int, int]:
+    if not settings.semantic_chunking_enabled:
+        return min_size, max_size
+
+    semantic_max = max_size
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if any(_TABLE_LINE_RE.search(line) for line in lines):
+        semantic_max = min(semantic_max, settings.semantic_table_chunk_max_chars)
+    if any(_FAQ_LINE_RE.search(line) for line in lines):
+        semantic_max = min(semantic_max, settings.semantic_faq_chunk_max_chars)
+
+    semantic_min = max(300, min_size // 2) if semantic_max < max_size else min_size
+    return min(semantic_min, semantic_max), semantic_max

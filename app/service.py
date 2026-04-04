@@ -104,7 +104,7 @@ class RagService:
                 "title": r.title,
                 "type": r.type,
                 "page": r.page,
-                "snippet": r.snippet,
+                "snippet": r.text,
                 "score": float(round(r.score, 4)),
                 "text": r.text if return_text else None,
             }
