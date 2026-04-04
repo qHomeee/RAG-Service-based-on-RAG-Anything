@@ -4,6 +4,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from typing import Callable, Iterable
+from urllib.parse import urlparse
 
 from sqlalchemy import bindparam, delete, select, text
 from sqlalchemy.orm import Session
@@ -99,7 +100,7 @@ class RagRepository:
         source_uris: list[str] | None,
     ) -> list[RetrievalRow]:
         normalized_query = normalize_query(query)
-        expanded_queries = expand_query(normalized_query)
+        expanded_queries = expand_query(normalized_query, collection=collection, source_uris=source_uris)
 
         logger.debug(
             "retrieval_query_preprocessed",
@@ -150,7 +151,12 @@ class RagRepository:
         if not fused_hits:
             return []
 
-        reranked_hits = rerank_by_keyword_relevance(normalized_query, fused_hits)
+        reranked_hits = rerank_by_keyword_relevance(
+            normalized_query,
+            fused_hits,
+            collection=collection,
+            source_uris=source_uris,
+        )
         logger.debug(
             "retrieval_keyword_rerank_counts",
             extra={
@@ -246,6 +252,14 @@ class RagRepository:
             rerank_scores = self.reranker.score(query, [item[0].text for item in rerank_candidates])
         else:
             logger.warning("reranker_unavailable_fallback", extra={"reranker_model": self.reranker.model_name, "error": self.reranker.load_error})
+            logger.error(
+                "reranker_unavailable_fallback_alert",
+                extra={
+                    "alert": True,
+                    "recommendation": "Monitor /readyz checks.reranker_loaded and reranker_error",
+                    "reranker_model": self.reranker.model_name,
+                },
+            )
             rerank_scores = [score for _, score in rerank_candidates]
 
         rescored: list[RetrievalRow] = []
@@ -280,26 +294,11 @@ def _tokenize(text: str) -> list[str]:
     return re.findall(r"[\w-]+", (text or "").lower())
 
 
-QUERY_SYNONYMS: dict[str, list[str]] = {
-    "инфляция": ["рост цен", "индекс потребительских цен", "обесценивание"],
-    "ввп": ["валовой внутренний продукт", "gdp"],
-    "стили": ["стиль", "жанр", "речь"],
-    "налог": ["налогообложение", "сбор", "пошлина"],
-}
-
-
 QUERY_PREFIXES = (
     "тема урока:",
     "тема:",
     "урок:",
 )
-
-
-TOPIC_EXPANSIONS: dict[str, list[str]] = {
-    "османская империя": ["осман", "турция", "султан", "танзим", "стамбул", "порта", "19 век", "упадок"],
-    "римская империя": ["рим", "цезарь", "сенат", "легион", "провинция", "античность"],
-    "первая мировая": ["1914", "антанта", "центральные державы", "окопная война", "верден"],
-}
 
 
 def normalize_query(query: str) -> str:
@@ -311,7 +310,7 @@ def normalize_query(query: str) -> str:
     return normalized
 
 
-def expand_query(query: str) -> list[str]:
+def expand_query(query: str, *, collection: str | None = None, source_uris: list[str] | None = None) -> list[str]:
     if not query:
         return []
 
@@ -323,11 +322,13 @@ def expand_query(query: str) -> list[str]:
     if len(terms) > 4:
         return queries
 
+    query_synonyms, topic_expansions = _expansion_maps(collection=collection, source_uris=source_uris)
+
     extra_terms: list[str] = []
     for term in terms:
-        extra_terms.extend(QUERY_SYNONYMS.get(term, []))
+        extra_terms.extend(query_synonyms.get(term, []))
 
-    for key, topic_terms in TOPIC_EXPANSIONS.items():
+    for key, topic_terms in topic_expansions.items():
         if key in query:
             extra_terms.extend(topic_terms)
 
@@ -367,8 +368,14 @@ def retrieve_multi_query(
     return merged
 
 
-def rerank_by_keyword_relevance(query: str, hits: list[RetrievalRow]) -> list[RetrievalRow]:
-    markers = _topic_markers(query)
+def rerank_by_keyword_relevance(
+    query: str,
+    hits: list[RetrievalRow],
+    *,
+    collection: str | None = None,
+    source_uris: list[str] | None = None,
+) -> list[RetrievalRow]:
+    markers = _topic_markers(query, collection=collection, source_uris=source_uris)
     if not markers:
         return sorted(hits, key=lambda h: h.score, reverse=True)
 
@@ -400,16 +407,17 @@ def rerank_by_keyword_relevance(query: str, hits: list[RetrievalRow]) -> list[Re
     return sorted(rescored, key=lambda h: h.score, reverse=True)
 
 
-def _topic_markers(query: str) -> list[str]:
+def _topic_markers(query: str, *, collection: str | None = None, source_uris: list[str] | None = None) -> list[str]:
     markers: set[str] = set()
     query_lc = query.lower()
+    _, topic_expansions = _expansion_maps(collection=collection, source_uris=source_uris)
     for token in _tokenize(query_lc):
         if len(token) >= 4:
             markers.add(token[:5])
         if len(token) >= 6:
             markers.add(token)
 
-    for topic, topic_markers in TOPIC_EXPANSIONS.items():
+    for topic, topic_markers in topic_expansions.items():
         if topic in query_lc:
             markers.update(topic_markers)
 
@@ -421,6 +429,63 @@ def _expand_query(query: str) -> str:
     if not expanded:
         return query
     return expanded[1] if len(expanded) > 1 else expanded[0]
+
+
+def _expansion_maps(
+    *,
+    collection: str | None,
+    source_uris: list[str] | None,
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    query_synonyms = _clone_map(settings.query_synonyms_default)
+    topic_expansions = _clone_map(settings.topic_expansions_default)
+
+    if collection:
+        _merge_map(query_synonyms, settings.query_synonyms_by_collection.get(collection, {}))
+        _merge_map(topic_expansions, settings.topic_expansions_by_collection.get(collection, {}))
+
+    for domain in _extract_domains(source_uris):
+        _merge_map(query_synonyms, settings.query_synonyms_by_domain.get(domain, {}))
+        _merge_map(topic_expansions, settings.topic_expansions_by_domain.get(domain, {}))
+
+    return query_synonyms, topic_expansions
+
+
+def _clone_map(source: dict[str, list[str]]) -> dict[str, list[str]]:
+    return {key.lower(): [item.strip() for item in values if item and item.strip()] for key, values in source.items()}
+
+
+def _merge_map(target: dict[str, list[str]], incoming: dict[str, list[str]]) -> None:
+    for key, values in incoming.items():
+        normalized_key = (key or "").strip().lower()
+        if not normalized_key:
+            continue
+        existing = target.setdefault(normalized_key, [])
+        seen = {item.lower() for item in existing}
+        for raw_value in values:
+            value = (raw_value or "").strip()
+            if not value:
+                continue
+            lowered = value.lower()
+            if lowered in seen:
+                continue
+            existing.append(value)
+            seen.add(lowered)
+
+
+def _extract_domains(source_uris: list[str] | None) -> set[str]:
+    if not source_uris:
+        return set()
+    domains: set[str] = set()
+    for source_uri in source_uris:
+        uri = (source_uri or "").strip().lower()
+        if not uri:
+            continue
+        parsed = urlparse(uri if "://" in uri else f"https://{uri}")
+        host = parsed.netloc or parsed.path.split("/")[0]
+        host = host.split("@")[-1].split(":")[0].strip(".")
+        if host:
+            domains.add(host)
+    return domains
 
 
 def _bm25_scores(query_terms: list[str], rows: list[RetrievalRow], *, k1: float = 1.5, b: float = 0.75) -> dict[str, float]:
