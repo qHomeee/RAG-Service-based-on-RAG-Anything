@@ -19,6 +19,9 @@ from app.utils import normalize_text
 
 logger = logging.getLogger("rag_service")
 
+PAGE_KEYS = ("page", "page_number", "page_no", "page_idx", "page_index")
+ZERO_BASED_PAGE_KEYS = {"page_idx", "page_index"}
+
 MINERU_MODULE_TO_PACKAGE = {
     "fast_langdetect": "fast-langdetect",
     "doclayout_yolo": "doclayout-yolo",
@@ -349,14 +352,14 @@ class RAGAnythingParser:
         for idx, item in enumerate(elements):
             elem_type = str(item.get("type", "text")).lower()
             content = item.get("content") or item.get("text") or ""
-            page = item.get("page")
-            meta = {k: v for k, v in item.items() if k not in {"content", "text", "type", "page"}}
+            page = _coerce_page_number(item)
+            meta = {k: v for k, v in item.items() if k not in {"content", "text", "type", *PAGE_KEYS}}
             normalized.append(
                 ParsedElement(
                     element_index=idx,
                     type=elem_type if elem_type in {"text", "table", "image", "equation"} else "text",
                     content=normalize_text(str(content)),
-                    page=page if isinstance(page, int) else None,
+                    page=page,
                     meta=meta,
                 )
             )
@@ -391,6 +394,23 @@ class RAGAnythingParser:
             except Exception:
                 return []
         return []
+
+
+def _coerce_page_number(item: dict) -> int | None:
+    for key in PAGE_KEYS:
+        raw = item.get(key)
+        if raw is None or isinstance(raw, bool):
+            continue
+        try:
+            page = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if page < 0:
+            continue
+        if key in ZERO_BASED_PAGE_KEYS or page == 0:
+            page += 1
+        return page
+    return None
 
 
 

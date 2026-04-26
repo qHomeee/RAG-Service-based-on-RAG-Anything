@@ -28,6 +28,14 @@ def test_logs_fallback_reason_when_mineru_empty(tmp_path, monkeypatch, caplog):
     assert elements == [ParsedElement(element_index=0, type="text", content="hello", meta={"fallback": True})]
 
 
+def test_normalize_elements_accepts_mineru_page_idx():
+    parser = RAGAnythingParser()
+    elements = parser._normalize_elements([{"type": "text", "text": "page text", "page_idx": 0}])
+
+    assert elements[0].page == 1
+    assert "page_idx" not in elements[0].meta
+
+
 def test_logs_warning_when_mineru_throws(tmp_path, monkeypatch, caplog):
     parser = RAGAnythingParser()
     sample = tmp_path / "sample.txt"

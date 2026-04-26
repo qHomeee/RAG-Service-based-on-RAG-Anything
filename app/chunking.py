@@ -60,7 +60,7 @@ def split_structured_chunks(
             return
         local_min_size, local_max_size = _semantic_chunk_bounds(merged, min_size=min_size, max_size=max_size)
         for part in _split_without_breaking_sentences(merged, min_size=local_min_size, max_size=local_max_size):
-            chunks.append(StructuredChunk(text=part, heading_path=list(heading_path)))
+            chunks.append(StructuredChunk(text=_attach_heading_context(part, heading_path), heading_path=list(heading_path)))
         buffer.clear()
 
     for block in blocks:
@@ -129,3 +129,12 @@ def _semantic_chunk_bounds(text: str, *, min_size: int, max_size: int) -> tuple[
 
     semantic_min = max(300, min_size // 2) if semantic_max < max_size else min_size
     return min(semantic_min, semantic_max), semantic_max
+
+
+def _attach_heading_context(text: str, heading_path: list[str]) -> str:
+    if not heading_path:
+        return text
+    heading = normalize_text(" / ".join(heading_path))
+    if not heading or text.lower().startswith(heading.lower()):
+        return text
+    return normalize_text(f"{heading}\n\n{text}")

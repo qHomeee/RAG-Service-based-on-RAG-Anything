@@ -6,6 +6,7 @@ class Settings(BaseSettings):
 
     app_name: str = "RAG Anything Service"
     app_env: str = "development"
+    log_level: str = "INFO"
 
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/rag"
     db_pool_size: int = 10
@@ -24,9 +25,9 @@ class Settings(BaseSettings):
     max_file_size_mb: int = 50
     max_query_chars: int = 4000
     default_top_k: int = 12
-    default_min_score: float = 0.2
-    chunk_size: int = 1500
-    chunk_overlap: int = 180
+    default_min_score: float = 0.35
+    chunk_size: int = 1000
+    chunk_overlap: int = 150
     adaptive_chunk_min_chars: int = 800
     adaptive_chunk_max_chars: int = 1200
     semantic_chunking_enabled: bool = True
@@ -37,6 +38,23 @@ class Settings(BaseSettings):
     rerank_top_n: int = 40
     rag_final_top_k: int = 5
     hybrid_vector_weight: float = 0.6
+    retrieval_dense_weight: float = 0.35
+    retrieval_lexical_weight: float = 0.35
+    retrieval_rerank_weight: float = 0.2
+    retrieval_rrf_weight: float = 0.05
+    retrieval_document_weight: float = 0.05
+    retrieval_rrf_k: int = 60
+    retrieval_noise_dense_floor: float = 0.55
+    retrieval_noise_strict_dense_floor: float = 0.65
+    retrieval_min_lexical_overlap: float = 0.01
+    retrieval_adaptive_relative_floor: float = 0.55
+    retrieval_adaptive_gap: float = 0.18
+    retrieval_mmr_lambda: float = 0.85
+    retrieval_mmr_similarity_threshold: float = 0.82
+    document_prefilter_enabled: bool = True
+    document_prefilter_top_n: int = 8
+    context_expansion_neighbors: int = 1
+    context_expansion_max_chars: int = 2400
     query_expansion_enabled: bool = True
     query_synonyms_default: dict[str, list[str]] = {
         "инфляция": ["рост цен", "индекс потребительских цен", "обесценивание"],
@@ -44,11 +62,7 @@ class Settings(BaseSettings):
         "стили": ["стиль", "жанр", "речь"],
         "налог": ["налогообложение", "сбор", "пошлина"],
     }
-    topic_expansions_default: dict[str, list[str]] = {
-        "османская империя": ["осман", "турция", "султан", "танзим", "стамбул", "порта", "19 век", "упадок"],
-        "римская империя": ["рим", "цезарь", "сенат", "легион", "провинция", "античность"],
-        "первая мировая": ["1914", "антанта", "центральные державы", "окопная война", "верден"],
-    }
+    topic_expansions_default: dict[str, list[str]] = {}
     query_synonyms_by_collection: dict[str, dict[str, list[str]]] = {}
     topic_expansions_by_collection: dict[str, dict[str, list[str]]] = {}
     query_synonyms_by_domain: dict[str, dict[str, list[str]]] = {}

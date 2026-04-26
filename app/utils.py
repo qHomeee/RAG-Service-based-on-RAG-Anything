@@ -8,7 +8,7 @@ def normalize_text(text: str) -> str:
     return compact
 
 
-def snippet_from_text(text: str, min_len: int = 200, max_len: int = 400) -> str:
+def snippet_from_text(text: str, min_len: int = 0, max_len: int = 1000) -> str:
     norm = normalize_text(text)
     if len(norm) <= max_len:
         return norm

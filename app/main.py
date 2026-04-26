@@ -37,7 +37,7 @@ logger = logging.getLogger("rag_service")
 handler = logging.StreamHandler()
 handler.setFormatter(jsonlogger.JsonFormatter())
 logger.addHandler(handler)
-logger.setLevel(logging.INFO)
+logger.setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
 
 
 @contextmanager
@@ -196,6 +196,17 @@ def ingest(payload: IngestRequest, service: RagService = Depends(get_service)) -
 def retrieve(payload: RetrieveRequest, service: RagService = Depends(get_service)) -> RetrieveResponse:
     if len(payload.query) > settings.max_query_chars:
         raise HTTPException(status_code=413, detail="Query too large")
+    if payload.debug and hasattr(service, "retrieve_with_debug"):
+        hits, debug = service.retrieve_with_debug(
+            payload.query,
+            payload.top_k,
+            payload.min_score,
+            payload.collection,
+            payload.source_uris,
+            payload.return_text,
+        )
+        return RetrieveResponse(hits=hits, debug=debug)
+
     hits = service.retrieve(
         payload.query,
         payload.top_k,

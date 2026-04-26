@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+import re
 
 from app.chunking import split_structured_chunks
 from app.config import settings
@@ -33,7 +34,11 @@ class RagService:
                 source_uri,
                 file_path.name,
                 collection,
-                {"path": str(file_path), "parse_mode": parse_mode},
+                {
+                    "path": str(file_path),
+                    "parse_mode": parse_mode,
+                    **_infer_document_metadata(file_path, root, collection),
+                },
                 reindex,
             )
             indexed_docs += 1
@@ -47,6 +52,11 @@ class RagService:
                     fragment_id = stable_fragment_id(source_uri, elem.element_index * 10_000 + chunk_idx, chunk.text)
                     meta = dict(elem.meta)
                     meta["heading_path"] = chunk.heading_path
+                    meta["source_uri"] = source_uri
+                    meta["title"] = getattr(doc, "title", file_path.name)
+                    meta["collection"] = collection
+                    meta["page"] = elem.page
+                    meta["chunk_index"] = chunk_idx
                     fragment = CanonicalFragment(
                         fragment_id=fragment_id,
                         element_index=elem.element_index,
@@ -97,19 +107,55 @@ class RagService:
         return_text: bool,
     ) -> list[dict]:
         rows = self.repository.retrieve(query, top_k, min_score, collection, source_uris)
-        return [
-            {
+        return self._rows_to_hits(rows, return_text=return_text, debug=False)
+
+    def retrieve_with_debug(
+        self,
+        query: str,
+        top_k: int,
+        min_score: float,
+        collection: str,
+        source_uris: list[str] | None,
+        return_text: bool,
+    ) -> tuple[list[dict], dict | None]:
+        result = self.repository.retrieve_with_debug(
+            query,
+            top_k,
+            min_score,
+            collection,
+            source_uris,
+            debug=True,
+        )
+        return self._rows_to_hits(result.hits, return_text=return_text, debug=True), result.debug
+
+    @staticmethod
+    def _rows_to_hits(rows, *, return_text: bool, debug: bool) -> list[dict]:
+        hits: list[dict] = []
+        for r in rows:
+            payload = {
                 "fragment_id": r.fragment_id,
                 "source_uri": r.source_uri,
                 "title": r.title,
                 "type": r.type,
                 "page": r.page,
                 "snippet": r.text,
-                "score": float(round(r.score, 4)),
+                "score": float(r.final_score or r.score),
                 "text": r.text if return_text else None,
             }
-            for r in rows
-        ]
+            if debug:
+                payload.update(
+                    {
+                        "dense_score": float(r.dense_score),
+                        "lexical_score": float(r.lexical_score),
+                        "rerank_score": float(r.rerank_score) if r.rerank_score is not None else None,
+                        "final_score": float(r.final_score or r.score),
+                        "lexical_overlap": float(r.lexical_overlap),
+                        "document_score": float(r.document_score),
+                        "rrf_score": float(r.rrf_score),
+                    }
+                )
+            hits.append(payload)
+        return hits
 
     def query(
         self,
@@ -143,3 +189,17 @@ class RagService:
     def list_sources(self, collection: str) -> list[SourceInfo]:
         rows = self.repository.list_sources(collection)
         return [SourceInfo(source_uri=row.source_uri, title=row.title) for row in rows]
+
+
+def _infer_document_metadata(file_path: Path, root: Path, collection: str) -> dict:
+    relative = file_path.relative_to(root)
+    parts = list(relative.parts)
+    parent_parts = parts[:-1]
+    class_match = re.search(r"(?P<class>\d{1,2})\s*(?:класс|klass|class)", file_path.stem, re.IGNORECASE)
+    return {
+        "collection": collection,
+        "file_type": file_path.suffix.lower().lstrip("."),
+        "subject": parent_parts[0] if parent_parts else None,
+        "grade": int(class_match.group("class")) if class_match else None,
+        "path_parts": parent_parts,
+    }

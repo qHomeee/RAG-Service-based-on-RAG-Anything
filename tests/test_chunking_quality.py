@@ -15,7 +15,9 @@ def test_split_structured_chunks_preserves_heading_path():
     chunks = split_structured_chunks(text, min_size=10, max_size=120)
     assert len(chunks) == 2
     assert chunks[0].heading_path == ["Раздел 1"]
+    assert chunks[0].text.startswith("Раздел 1")
     assert chunks[1].heading_path == ["Раздел 1", "Подраздел"]
+    assert chunks[1].text.startswith("Раздел 1 / Подраздел")
 
 
 def test_recall_and_ndcg_metrics():
