@@ -1,7 +1,7 @@
 import uuid
 
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 try:
@@ -21,7 +21,7 @@ class Document(Base):
     source_uri: Mapped[str] = mapped_column(String, unique=True, index=True)
     title: Mapped[str | None] = mapped_column(String, nullable=True)
     collection: Mapped[str] = mapped_column(String, default="default", index=True)
-    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    meta: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     fragments = relationship("Fragment", back_populates="document", cascade="all, delete-orphan")
@@ -37,8 +37,8 @@ class Fragment(Base):
     page: Mapped[int | None] = mapped_column(Integer, nullable=True)
     element_index: Mapped[int] = mapped_column(Integer)
     text: Mapped[str] = mapped_column(Text)
-    snippet: Mapped[str] = mapped_column(String(450))
-    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    snippet: Mapped[str] = mapped_column(Text)
+    meta: Mapped[dict] = mapped_column(JSONB, default=dict)
 
     document = relationship("Document", back_populates="fragments")
     embeddings = relationship("Embedding", back_populates="fragment", cascade="all, delete-orphan")
@@ -53,6 +53,6 @@ class Embedding(Base):
     subchunk_index: Mapped[int] = mapped_column(Integer)
     text: Mapped[str] = mapped_column(Text)
     embedding: Mapped[list[float]] = mapped_column(Vector(384) if Vector else JSON)
-    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    meta: Mapped[dict] = mapped_column(JSONB, default=dict)
 
     fragment = relationship("Fragment", back_populates="embeddings")

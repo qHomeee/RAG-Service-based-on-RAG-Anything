@@ -23,6 +23,7 @@ class RetrieveRequest(BaseModel):
     source_uris: list[str] | None = None
     return_text: bool = False
     debug: bool = False
+    include_toc: bool = False
 
 
 class Hit(BaseModel):
@@ -34,13 +35,25 @@ class Hit(BaseModel):
     snippet: str
     score: float
     text: str | None = None
-    dense_score: float | None = None
-    lexical_score: float | None = None
-    rerank_score: float | None = None
-    final_score: float | None = None
-    lexical_overlap: float | None = None
-    document_score: float | None = None
-    rrf_score: float | None = None
+    dense_score: float = 0.0
+    lexical_score: float = 0.0
+    phrase_score: float = 0.0
+    subject_score: float = 0.0
+    section_score: float = 0.0
+    rerank_score: float = 0.0
+    final_score: float = 0.0
+    lexical_overlap: float = 0.0
+    document_score: float = 0.0
+    rrf_score: float = 0.0
+    exact_phrases: list[str] = Field(default_factory=list)
+    matched_phrases: list[str] = Field(default_factory=list)
+    missing_required_modifiers: list[str] = Field(default_factory=list)
+    wrong_entity_modifier: bool = False
+    phrase_score_before_penalty: float = 0.0
+    phrase_score_after_penalty: float = 0.0
+    is_toc: bool = False
+    toc_filtered: bool = False
+    toc_penalty_applied: bool = False
 
 
 class RetrieveResponse(BaseModel):

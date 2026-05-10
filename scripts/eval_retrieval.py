@@ -51,6 +51,16 @@ DEFAULT_EVAL_SET = [
         "expected_terms": ["граждан", "оборон", "средств"],
         "forbidden_source_terms": ["истор", "русск", "одуван"],
     },
+    {
+        "query": "квадратное уравнение",
+        "expected_terms": ["квадрат", "уравнен", "дискриминант", "корн"],
+        "forbidden_source_terms": ["истор", "русск", "граждан", "биолог"],
+    },
+    {
+        "query": "фотосинтез",
+        "expected_terms": ["фотосинтез", "хлорофилл", "растен", "кислород"],
+        "forbidden_source_terms": ["истор", "русск", "граждан", "математ"],
+    },
 ]
 
 
@@ -100,6 +110,11 @@ def main() -> None:
                 debug=True,
             )
             print(f"\nQUERY: {query}")
+            if result.debug:
+                print("QUERY_ANALYSIS:", json.dumps(result.debug.get("query_analysis"), ensure_ascii=False))
+                print("SELECTED_DOCS:", json.dumps(result.debug.get("selected_documents", [])[:5], ensure_ascii=False))
+                if result.debug.get("rejected_documents"):
+                    print("REJECTED_DOCS:", json.dumps(result.debug.get("rejected_documents", [])[:5], ensure_ascii=False))
             print(
                 "COUNTS:",
                 {
@@ -117,6 +132,18 @@ def main() -> None:
                     "score": round(hit.score, 4),
                     "dense_score": round(hit.dense_score, 4),
                     "lexical_score": round(hit.lexical_score, 4),
+                    "phrase_score": round(hit.phrase_score, 4),
+                    "phrase_score_before_penalty": round(hit.phrase_score_before_penalty, 4),
+                    "phrase_score_after_penalty": round(hit.phrase_score_after_penalty, 4),
+                    "exact_phrases": hit.exact_phrases,
+                    "matched_phrases": hit.matched_phrases,
+                    "missing_required_modifiers": hit.missing_required_modifiers,
+                    "wrong_entity_modifier": hit.wrong_entity_modifier,
+                    "is_toc": hit.is_toc,
+                    "toc_filtered": hit.toc_filtered,
+                    "toc_penalty_applied": hit.toc_penalty_applied,
+                    "subject_score": round(hit.subject_score, 4),
+                    "section_score": round(hit.section_score, 4),
                     "rerank_score": round(hit.rerank_score, 4) if hit.rerank_score is not None else None,
                     "lexical_overlap": round(lexical_overlap(_query_terms_for_scoring(query), hit.text), 4),
                 }

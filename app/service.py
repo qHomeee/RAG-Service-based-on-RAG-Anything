@@ -4,6 +4,7 @@ import re
 
 from app.chunking import split_structured_chunks
 from app.config import settings
+from app.document_intelligence import build_document_profile, is_toc_text
 from app.parser import RAGAnythingParser
 from app.repository import RagRepository
 from app.schemas import CanonicalFragment, QueryResponse, Source, SourceInfo
@@ -30,17 +31,46 @@ class RagService:
             if parse_mode == "fallback":
                 fallback_docs += 1
 
+            document_profile = build_document_profile(
+                source_uri=source_uri,
+                title=file_path.name,
+                file_path=file_path,
+                parsed_elements=parsed,
+                collection=collection,
+            )
+            if hasattr(self.repository, "embeddings"):
+                document_profile["summary_embedding"] = self.repository.embeddings.embed(document_profile["profile_text"])
+            else:
+                document_profile["summary_embedding"] = []
             doc = self.repository.upsert_document(
                 source_uri,
                 file_path.name,
                 collection,
                 {
+                    **_infer_document_metadata(file_path, root, collection),
                     "path": str(file_path),
                     "parse_mode": parse_mode,
-                    **_infer_document_metadata(file_path, root, collection),
+                    "document_profile": document_profile,
+                    "subject": document_profile["subject"],
+                    "grade": document_profile["grade"],
+                    "doc_type": document_profile["doc_type"],
+                    "language": document_profile["language"],
+                    "keywords": document_profile["keywords"],
+                    "section_titles": document_profile["section_titles"],
                 },
                 reindex,
             )
+            document_profile["doc_id"] = str(doc.doc_id)
+            doc.meta = {
+                **(getattr(doc, "meta", None) or {}),
+                "document_profile": document_profile,
+                "subject": document_profile["subject"],
+                "grade": document_profile["grade"],
+                "doc_type": document_profile["doc_type"],
+                "language": document_profile["language"],
+            }
+            if hasattr(self.repository.db, "flush"):
+                self.repository.db.flush()
             indexed_docs += 1
 
             for elem in parsed:
@@ -57,6 +87,13 @@ class RagService:
                     meta["collection"] = collection
                     meta["page"] = elem.page
                     meta["chunk_index"] = chunk_idx
+                    meta["section_path"] = chunk.heading_path
+                    meta["section_title"] = chunk.heading_path[-1] if chunk.heading_path else None
+                    meta["subject"] = document_profile["subject"]
+                    meta["grade"] = document_profile["grade"]
+                    meta["doc_type"] = document_profile["doc_type"]
+                    meta["language"] = document_profile["language"]
+                    meta["is_toc"] = is_toc_text(chunk.text, page=getattr(chunk, "page", None) or elem.page)
                     fragment = CanonicalFragment(
                         fragment_id=fragment_id,
                         element_index=elem.element_index,
@@ -105,8 +142,9 @@ class RagService:
         collection: str,
         source_uris: list[str] | None,
         return_text: bool,
+        include_toc: bool = False,
     ) -> list[dict]:
-        rows = self.repository.retrieve(query, top_k, min_score, collection, source_uris)
+        rows = self.repository.retrieve(query, top_k, min_score, collection, source_uris, include_toc=include_toc)
         return self._rows_to_hits(rows, return_text=return_text, debug=False)
 
     def retrieve_with_debug(
@@ -117,6 +155,7 @@ class RagService:
         collection: str,
         source_uris: list[str] | None,
         return_text: bool,
+        include_toc: bool = False,
     ) -> tuple[list[dict], dict | None]:
         result = self.repository.retrieve_with_debug(
             query,
@@ -124,6 +163,7 @@ class RagService:
             min_score,
             collection,
             source_uris,
+            include_toc=include_toc,
             debug=True,
         )
         return self._rows_to_hits(result.hits, return_text=return_text, debug=True), result.debug
@@ -141,19 +181,28 @@ class RagService:
                 "snippet": r.text,
                 "score": float(r.final_score or r.score),
                 "text": r.text if return_text else None,
+                "dense_score": float(r.dense_score),
+                "lexical_score": float(r.lexical_score),
+                "phrase_score": float(r.phrase_score),
+                "subject_score": float(r.subject_score),
+                "section_score": float(r.section_score),
+                "rerank_score": float(r.rerank_score) if r.rerank_score is not None else 0.0,
+                "final_score": float(r.final_score or r.score),
+                "lexical_overlap": float(r.lexical_overlap),
+                "document_score": float(r.document_score),
+                "rrf_score": float(r.rrf_score),
+                "exact_phrases": list(r.exact_phrases),
+                "matched_phrases": list(r.matched_phrases),
+                "missing_required_modifiers": list(r.missing_required_modifiers),
+                "wrong_entity_modifier": bool(r.wrong_entity_modifier),
+                "phrase_score_before_penalty": float(r.phrase_score_before_penalty),
+                "phrase_score_after_penalty": float(r.phrase_score_after_penalty),
+                "is_toc": bool(r.is_toc),
+                "toc_filtered": bool(r.toc_filtered),
+                "toc_penalty_applied": bool(r.toc_penalty_applied),
             }
             if debug:
-                payload.update(
-                    {
-                        "dense_score": float(r.dense_score),
-                        "lexical_score": float(r.lexical_score),
-                        "rerank_score": float(r.rerank_score) if r.rerank_score is not None else None,
-                        "final_score": float(r.final_score or r.score),
-                        "lexical_overlap": float(r.lexical_overlap),
-                        "document_score": float(r.document_score),
-                        "rrf_score": float(r.rrf_score),
-                    }
-                )
+                payload["final_score"] = float(r.final_score or r.score)
             hits.append(payload)
         return hits
 
@@ -199,7 +248,7 @@ def _infer_document_metadata(file_path: Path, root: Path, collection: str) -> di
     return {
         "collection": collection,
         "file_type": file_path.suffix.lower().lstrip("."),
-        "subject": parent_parts[0] if parent_parts else None,
+        "path_subject_hint": parent_parts[0] if parent_parts else None,
         "grade": int(class_match.group("class")) if class_match else None,
         "path_parts": parent_parts,
     }

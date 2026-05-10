@@ -9,6 +9,9 @@ CREATE TABLE IF NOT EXISTS documents (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+COMMENT ON COLUMN documents.meta IS
+    'Document routing metadata: document_profile, subject, grade, doc_type, language, keywords, section_titles.';
+
 CREATE TABLE IF NOT EXISTS fragments (
     fragment_id TEXT PRIMARY KEY,
     doc_id UUID NOT NULL REFERENCES documents(doc_id) ON DELETE CASCADE,
@@ -21,8 +24,20 @@ CREATE TABLE IF NOT EXISTS fragments (
     meta JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
+COMMENT ON COLUMN fragments.meta IS
+    'Chunk routing metadata: section_path, section_title, subject, grade, doc_type, language, is_toc, heading_path.';
+
+CREATE INDEX IF NOT EXISTS idx_documents_collection ON documents(collection);
+CREATE INDEX IF NOT EXISTS idx_documents_meta_gin ON documents USING gin (meta);
+CREATE INDEX IF NOT EXISTS idx_documents_meta_subject ON documents ((meta->>'subject'));
+CREATE INDEX IF NOT EXISTS idx_documents_meta_grade ON documents ((meta->>'grade'));
+CREATE INDEX IF NOT EXISTS idx_documents_meta_doc_type ON documents ((meta->>'doc_type'));
 CREATE INDEX IF NOT EXISTS idx_fragments_doc_id ON fragments(doc_id);
 CREATE INDEX IF NOT EXISTS idx_fragments_source_uri ON fragments(source_uri);
+CREATE INDEX IF NOT EXISTS idx_fragments_meta_gin ON fragments USING gin (meta);
+CREATE INDEX IF NOT EXISTS idx_fragments_meta_subject ON fragments ((meta->>'subject'));
+CREATE INDEX IF NOT EXISTS idx_fragments_meta_section_title ON fragments ((meta->>'section_title'));
+CREATE INDEX IF NOT EXISTS idx_fragments_meta_is_toc ON fragments ((meta->>'is_toc'));
 
 CREATE TABLE IF NOT EXISTS embeddings (
     id UUID PRIMARY KEY,
@@ -33,6 +48,9 @@ CREATE TABLE IF NOT EXISTS embeddings (
     meta JSONB NOT NULL DEFAULT '{}'::jsonb,
     CONSTRAINT uq_fragment_subchunk UNIQUE(fragment_id, subchunk_index)
 );
+
+COMMENT ON COLUMN embeddings.meta IS
+    'Embedding metadata copied from chunk/document routing fields where available.';
 
 CREATE INDEX IF NOT EXISTS idx_embeddings_fragment_id ON embeddings(fragment_id);
 CREATE INDEX IF NOT EXISTS idx_embeddings_vector_ivfflat ON embeddings USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);

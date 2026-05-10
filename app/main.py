@@ -204,6 +204,7 @@ def retrieve(payload: RetrieveRequest, service: RagService = Depends(get_service
             payload.collection,
             payload.source_uris,
             payload.return_text,
+            payload.include_toc,
         )
         return RetrieveResponse(hits=hits, debug=debug)
 
@@ -214,6 +215,7 @@ def retrieve(payload: RetrieveRequest, service: RagService = Depends(get_service
         payload.collection,
         payload.source_uris,
         payload.return_text,
+        payload.include_toc,
     )
     return RetrieveResponse(hits=hits)
 
