@@ -3,3 +3,4 @@
 storage/raw/
 storage/parsed/
 .env
+storage/models/
