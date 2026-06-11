@@ -63,7 +63,7 @@ def split_structured_chunks(
             chunks.append(StructuredChunk(text=_attach_heading_context(part, heading_path), heading_path=list(heading_path)))
         buffer.clear()
 
-    for block in blocks:
+    for block_idx, block in enumerate(blocks):
         heading_match = _HEADING_RE.match(block)
         if heading_match:
             flush_buffer()
@@ -73,6 +73,28 @@ def split_structured_chunks(
                 heading_path[:] = heading_path[: level - 1]
                 heading_path.append(heading)
             continue
+
+        block_lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if len(block_lines) == 1 and block_idx < len(blocks) - 1 and _looks_like_heading_line(block_lines[0]):
+            flush_buffer()
+            heading = normalize_text(block_lines[0])
+            if heading:
+                if heading_path:
+                    heading_path[-1] = heading
+                else:
+                    heading_path.append(heading)
+            continue
+        if len(block_lines) > 1 and _looks_like_heading_line(block_lines[0]):
+            flush_buffer()
+            heading = normalize_text(block_lines[0])
+            if heading:
+                if heading_path:
+                    heading_path[-1] = heading
+                else:
+                    heading_path.append(heading)
+            block = "\n".join(block_lines[1:]).strip()
+            if not block:
+                continue
 
         candidate = normalize_text("\n\n".join(buffer + [block]))
         if buffer and len(candidate) > max_size:
@@ -84,7 +106,7 @@ def split_structured_chunks(
             flush_buffer()
 
     flush_buffer()
-    return chunks
+    return _postprocess_chunk_boundaries(chunks, max_size=max_size)
 
 
 def _split_without_breaking_sentences(text: str, *, min_size: int, max_size: int) -> list[str]:
@@ -93,7 +115,7 @@ def _split_without_breaking_sentences(text: str, *, min_size: int, max_size: int
 
     sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(text) if s.strip()]
     if not sentences:
-        return [text[i : i + max_size] for i in range(0, len(text), max_size)]
+        return _split_on_word_boundaries(text, max_size=max_size)
 
     chunks: list[str] = []
     buf = ""
@@ -114,6 +136,64 @@ def _split_without_breaking_sentences(text: str, *, min_size: int, max_size: int
         else:
             chunks.append(buf)
     return [normalize_text(c) for c in chunks if c.strip()]
+
+
+def _split_on_word_boundaries(text: str, *, max_size: int) -> list[str]:
+    words = text.split()
+    chunks: list[str] = []
+    buf = ""
+    for word in words:
+        candidate = f"{buf} {word}".strip() if buf else word
+        if buf and len(candidate) > max_size:
+            chunks.append(buf)
+            buf = word
+        else:
+            buf = candidate
+    if buf:
+        chunks.append(buf)
+    return chunks or [text[:max_size]]
+
+
+def _postprocess_chunk_boundaries(chunks: list[StructuredChunk], *, max_size: int) -> list[StructuredChunk]:
+    processed: list[StructuredChunk] = []
+    for chunk in chunks:
+        text = normalize_text(chunk.text)
+        if not text:
+            continue
+        if processed and chunk.heading_path == processed[-1].heading_path and _should_merge_with_previous(text, max_size=max_size):
+            merged_text = normalize_text(f"{processed[-1].text} {text}")
+            if len(merged_text) <= max_size + settings.chunk_overlap:
+                processed[-1] = StructuredChunk(text=merged_text, heading_path=processed[-1].heading_path)
+                continue
+        processed.append(StructuredChunk(text=text, heading_path=chunk.heading_path))
+    return processed
+
+
+def _should_merge_with_previous(text: str, *, max_size: int) -> bool:
+    if len(text) < max(220, settings.chunk_overlap):
+        return True
+    first_alpha = re.search(r"[A-Za-zА-Яа-яЁё]", text)
+    if first_alpha and first_alpha.group(0).islower():
+        return True
+    return len(text) < max_size // 3 and not re.search(r"^[A-ZА-ЯЁ0-9#§]", text)
+
+
+def _looks_like_heading_line(text: str) -> bool:
+    cleaned = normalize_text(re.sub(r"^[§\d.\s-]+", "", text or ""))
+    if not cleaned or len(cleaned) > 140:
+        return False
+    words = cleaned.split()
+    if not (1 <= len(words) <= 10):
+        return False
+    if re.search(r"[.!?]\s*$", cleaned):
+        return False
+    if re.fullmatch(r"[\d\s.:-]+", cleaned):
+        return False
+    letters = re.findall(r"[A-Za-zА-Яа-яЁё]", cleaned)
+    uppercase = re.findall(r"[A-ZА-ЯЁ]", cleaned)
+    if letters and len(uppercase) / len(letters) >= 0.55:
+        return True
+    return len(words) <= 6 and bool(re.search(r"[A-ZА-ЯЁ]", cleaned[:1]))
 
 
 def _semantic_chunk_bounds(text: str, *, min_size: int, max_size: int) -> tuple[int, int]:

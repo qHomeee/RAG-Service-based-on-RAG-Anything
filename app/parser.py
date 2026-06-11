@@ -14,7 +14,6 @@ from typing import Any
 from app.config import settings
 from app.mineru_runner import MineruRunError, MineruUnavailableError, check_mineru_env, extract_missing_module, resolve_mineru_python, run_mineru
 from app.schemas import ParsedElement
-from app.utils import normalize_text
 
 
 logger = logging.getLogger("rag_service")
@@ -358,7 +357,7 @@ class RAGAnythingParser:
                 ParsedElement(
                     element_index=idx,
                     type=elem_type if elem_type in {"text", "table", "image", "equation"} else "text",
-                    content=normalize_text(str(content)),
+                    content=_normalize_document_text(str(content)),
                     page=page,
                     meta=meta,
                 )
@@ -369,7 +368,7 @@ class RAGAnythingParser:
         suffix = path.suffix.lower()
         if suffix in {".txt", ".md"}:
             text = path.read_text(encoding="utf-8", errors="ignore")
-            return [ParsedElement(element_index=0, type="text", content=normalize_text(text), meta={"fallback": True})]
+            return [ParsedElement(element_index=0, type="text", content=_normalize_document_text(text), meta={"fallback": True})]
         if suffix == ".pdf":
             try:
                 from pypdf import PdfReader
@@ -377,7 +376,7 @@ class RAGAnythingParser:
                 reader = PdfReader(str(path))
                 elems: list[ParsedElement] = []
                 for i, page in enumerate(reader.pages):
-                    text = normalize_text(page.extract_text() or "")
+                    text = _normalize_document_text(page.extract_text() or "")
                     if text:
                         elems.append(ParsedElement(element_index=i, type="text", content=text, page=i + 1, meta={"fallback": True}))
                 return elems
@@ -388,7 +387,7 @@ class RAGAnythingParser:
                 import docx
 
                 document = docx.Document(str(path))
-                text = normalize_text("\n".join(p.text for p in document.paragraphs))
+                text = _normalize_document_text("\n".join(p.text for p in document.paragraphs))
                 if text:
                     return [ParsedElement(element_index=0, type="text", content=text, meta={"fallback": True})]
             except Exception:
@@ -412,6 +411,13 @@ def _coerce_page_number(item: dict) -> int | None:
         return page
     return None
 
+
+def _normalize_document_text(text: str) -> str:
+    normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    normalized = re.sub(r"[ \t]+", " ", normalized)
+    normalized = re.sub(r"\n[ \t]+", "\n", normalized)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    return normalized.strip()
 
 
 def _doc_dir_name(path: Path) -> str:

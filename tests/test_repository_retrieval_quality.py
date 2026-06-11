@@ -2,7 +2,15 @@ from pathlib import Path
 
 import pytest
 
-from app.document_intelligence import analyze_query, build_document_profile, is_toc_text
+from app.document_intelligence import (
+    analyze_query,
+    build_document_profile,
+    detect_chunk_type,
+    detect_chunk_type_details,
+    infer_section_title,
+    is_toc_text,
+    text_quality_flags,
+)
 from app.config import settings
 from app.repository import (
     RetrievalRow,
@@ -17,7 +25,9 @@ from app.repository import (
     mmr_select,
     normalize_query,
     normalize_context,
+    normalize_for_required_term,
     phrase_match_score,
+    required_term_match_score,
     rerank_by_keyword_relevance,
     retrieve_multi_query,
     score_retrieval_candidates,
@@ -69,9 +79,14 @@ def test_query_terms_keep_numbers_roman_numerals_and_short_terms():
     [
         ("Александр I и его правление", "history"),
         ("правописание Н и НН в причастиях", "russian_language"),
+        ("Морфологический разбор", "russian_language"),
+        ("синтаксический разбор предложения", "russian_language"),
         ("АСДНР при чрезвычайных ситуациях", "safety"),
+        ("средства гражданской обороны", "safety"),
         ("решить квадратное уравнение", "math"),
+        ("производная функции", "math"),
         ("фотосинтез", "biology"),
+        ("митоз клетки", "biology"),
     ],
 )
 def test_query_understanding_detects_subjects(query, subject):
@@ -87,6 +102,102 @@ def test_query_understanding_extracts_required_exact_entity_phrase():
     analysis = analyze_query("Александр I и его правление")
 
     assert "александр i" in analysis["exact_phrases"]
+
+
+@pytest.mark.parametrize(
+    ("query", "required_term"),
+    [
+        ("морфологический разбор", "морфологический разбор"),
+        ("синтаксический разбор", "синтаксический разбор"),
+        ("квадратное уравнение", "квадратное уравнение"),
+        ("гражданская оборона", "гражданская оборона"),
+        ("отечественная война", "отечественная война"),
+        ("клеточное дыхание", "клеточное дыхание"),
+    ],
+)
+def test_query_understanding_extracts_multiword_required_terms_for_concepts(query, required_term):
+    analysis = analyze_query(query)
+
+    assert analysis["query_type"] == "concept_lookup"
+    assert analysis["required_terms"] == [required_term]
+
+
+def test_required_term_score_requires_full_multiword_term():
+    required_terms = ["морфологический разбор"]
+
+    assert "морфологический разбор" in normalize_for_required_term("Морфологический разбор имени числительного I. Часть речи")
+
+    exact = required_term_match_score(required_terms, "Морфологический разбор причастия")
+    exact_numeral = required_term_match_score(required_terms, "Морфологический разбор имени числительного I. Часть речи")
+    exact_with_steps = required_term_match_score(required_terms, "Морфологический разбор междометия I. Часть речи. II. Морфологические признаки.")
+    exact_hyphenated = required_term_match_score(required_terms, "Морфологи-\nческий разбор глагола")
+    lemma = required_term_match_score(required_terms, "План морфологического разбора глагола")
+    partial = required_term_match_score(required_terms, "Рецензия — отзыв, письменный разбор произведения")
+    syntax_partial = required_term_match_score(required_terms, "См. разбор сложносочинённого предложения")
+    other_partial = required_term_match_score(required_terms, "Морфологические признаки причастия")
+
+    assert exact.score == 1.0
+    assert exact.match_type == "full_phrase_prefix"
+    assert exact_numeral.score == 1.0
+    assert exact_numeral.match_type == "full_phrase_prefix"
+    assert exact_with_steps.score == 1.0
+    assert exact_with_steps.match_type == "full_phrase_prefix"
+    assert exact_hyphenated.score == 1.0
+    assert exact_hyphenated.match_type == "full_phrase_prefix"
+    assert lemma.score == 1.0
+    assert lemma.match_type == "full_phrase"
+    assert partial.score <= 0.25
+    assert partial.match_type == "partial"
+    assert syntax_partial.score <= 0.25
+    assert syntax_partial.match_type == "partial"
+    assert other_partial.score <= 0.25
+
+
+@pytest.mark.parametrize(
+    ("query", "query_type"),
+    [
+        ("Морфологический разбор", "concept_lookup"),
+        ("квадратное уравнение", "concept_lookup"),
+        ("фотосинтез", "concept_lookup"),
+        ("гражданская оборона", "concept_lookup"),
+        ("правописание Н и НН в причастиях", "rule_lookup"),
+        ("упражнения на морфологический разбор", "exercise_lookup"),
+        ("тренировочные задания по причастиям", "exercise_lookup"),
+        ("решить квадратное уравнение", "problem_solving"),
+    ],
+)
+def test_query_understanding_detects_retrieval_intent(query, query_type):
+    assert analyze_query(query)["query_type"] == query_type
+
+
+@pytest.mark.parametrize(
+    ("text", "chunk_type"),
+    [
+        ("408. Выполните морфологический разбор причастий. Спишите предложения.", "exercise"),
+        ("А4. Часть речи неправильно определена. А5. Верно определены морфологические признаки у слова.", "test_question"),
+        ("А1. Укажите верный ответ. 1) существительное 2) глагол 3) союз 4) частица", "test_question"),
+        ("Приложение Планы разборов 238 Морфологический разбор имени существительного 239", "navigation_index"),
+        ("Порядок морфологического разбора имени существительного. I. Часть речи. II. Морфологические признаки. III. Синтаксическая роль.", "schema_or_plan"),
+        ("Квадратное уравнение - это уравнение вида ax2 + bx + c = 0.", "definition"),
+        ("Правило: в полных причастиях пишется НН при наличии приставки.", "rule"),
+        ("Например, фотосинтез происходит на свету.", "example"),
+    ],
+)
+def test_chunk_type_detection_is_intent_aware(text, chunk_type):
+    assert detect_chunk_type(text) == chunk_type
+
+
+def test_section_title_extraction_rejects_plan_steps_test_labels_and_numeric_noise():
+    assert infer_section_title("I. Часть речи. Общее грамматическое значение") is None
+    assert infer_section_title("II. Морфологические признаки") is None
+    assert infer_section_title("III. Синтаксическая роль") is None
+    assert infer_section_title("А5. Верно определены морфологические признаки") is None
+    assert infer_section_title("1,") is None
+    assert infer_section_title("1, 2.") is None
+    assert infer_section_title("1, 2. См. разбор сложносочинённого предложения") is None
+    assert infer_section_title("Рецензия (от нем") is None
+    assert infer_section_title("Морфологический разбор имени существительного") == "Морфологический разбор имени существительного"
+    assert detect_chunk_type_details("1, 2. См. разбор сложносочинённого предложения")["chunk_type"] == "navigation_index"
 
 
 def test_document_profile_extracts_subject_grade_doc_type_sections_and_keywords():
@@ -111,6 +222,20 @@ def test_document_profile_extracts_subject_grade_doc_type_sections_and_keywords(
     assert profile["language"] == "ru"
     assert "Фотосинтез" in profile["section_titles"]
     assert "фотосинтез" in profile["keywords"]
+
+
+def test_subject_score_uses_chunk_metadata_when_document_prefilter_is_absent():
+    analysis = analyze_query("Морфологический разбор")
+    russian = _row("ru", 0.55, "Выполните морфологический разбор причастий.", "russian.pdf")
+    russian.meta = {"subject": "russian_language"}
+    history = _row("history", 0.9, "История России и реформы государственного управления.", "history.pdf")
+    history.meta = {"subject": "history"}
+
+    scored, rejected = score_retrieval_candidates("Морфологический разбор", [history, russian], query_analysis=analysis)
+    by_id = {hit.fragment_id: hit for hit in scored}
+
+    assert by_id["ru"].subject_score >= 0.8
+    assert any(item["fragment_id"] == "history" and item["subject_score"] <= 0.25 for item in rejected)
 
 
 def test_lexical_overlap_uses_light_russian_normalization():
@@ -159,7 +284,8 @@ def test_required_entity_modifier_penalizes_partial_and_wrong_entities():
     assert by_id["wrong-ii"].wrong_entity_modifier is True
     assert by_id["wrong-iii"].wrong_entity_modifier is True
     assert by_id["patronymic"].wrong_entity_modifier is True
-    assert by_id["wrong-ii"].score < by_id["partial"].score
+    assert "wrong_entity_modifier_penalty" in by_id["wrong-ii"].penalties_applied
+    assert by_id["wrong-ii"].score < by_id["exact"].score
     assert by_id["wrong-ii"].phrase_score_before_penalty > by_id["wrong-ii"].phrase_score_after_penalty
 
 
@@ -291,6 +417,609 @@ def test_section_heading_boosts_relevant_chunk_text():
     assert scored[0].phrase_score > 0.4
 
 
+def test_section_score_uses_parent_heading_and_section_path():
+    candidate = _row("ru-section", 0.4, "Выполните разбор слов и укажите признаки.", "russian.pdf")
+    candidate.meta = {
+        "subject": "russian_language",
+        "section_title": "Морфологический разбор имени существительного",
+        "section_path": ["Русский язык", "Морфологический разбор имени существительного"],
+        "parent_heading": "Морфологический разбор имени существительного",
+    }
+
+    scored, rejected = score_retrieval_candidates("Морфологический разбор", [candidate])
+
+    assert not rejected
+    assert scored[0].section_score >= 0.7
+    assert scored[0].subject_score >= 0.8
+
+
+def test_concept_lookup_prefers_schema_or_plan_over_exercise_chunks():
+    query = "Морфологический разбор"
+    schema = _row(
+        "schema",
+        0.45,
+        "Порядок морфологического разбора имени существительного. I. Часть речи. II. Морфологические признаки. III. Синтаксическая роль.",
+        "russian.pdf",
+    )
+    schema.meta = {
+        "subject": "russian_language",
+        "section_title": "Морфологический разбор имени существительного",
+        "section_path": ["Русский язык", "Морфологический разбор имени существительного"],
+    }
+    exercise = _row(
+        "exercise",
+        0.9,
+        "408. Выполните морфологический разбор выделенных причастий. Спишите предложения и подчеркните основы.",
+        "russian.pdf",
+    )
+    exercise.meta = {"subject": "russian_language"}
+
+    scored, rejected = score_retrieval_candidates(query, [exercise, schema], apply_noise_filter=False)
+    by_id = {hit.fragment_id: hit for hit in scored}
+
+    assert not rejected
+    assert by_id["schema"].chunk_type == "schema_or_plan"
+    assert by_id["schema"].intent_boost_applied is True
+    assert by_id["schema"].full_phrase_match is True
+    assert by_id["schema"].concept_boost_applied is True
+    assert by_id["schema"].schema_or_rule_boost_applied is True
+    assert by_id["exercise"].chunk_type == "exercise"
+    assert by_id["exercise"].exercise_penalty_applied is True
+    assert by_id["exercise"].exercise_demoted_for_concept_lookup is True
+    assert by_id["exercise"].full_term_boost_applied is False
+    assert scored[0].fragment_id == "schema"
+    assert by_id["schema"].score > by_id["exercise"].score
+
+
+def test_required_term_full_phrase_prefix_for_schema_heading():
+    query = "морфологический разбор"
+    schema = _row(
+        "schema-numeral",
+        0.45,
+        "Морфологический разбор имени числительного I. Часть речи. II. Морфологические признаки.",
+        "russian.pdf",
+    )
+    schema.meta = {"subject": "russian_language"}
+
+    scored, rejected = score_retrieval_candidates(query, [schema], apply_noise_filter=False)
+    hit = scored[0]
+
+    assert not rejected
+    assert hit.full_phrase_match is True
+    assert hit.missing_required_terms == []
+    assert hit.required_term_score == 1.0
+    assert hit.required_term_match_type == "full_phrase_prefix"
+    assert hit.term_penalty_applied is False
+    assert hit.full_term_boost_applied is True
+
+
+def test_required_term_full_phrase_exercise_is_still_demoted_for_concept_lookup():
+    query = "морфологический разбор"
+    exercise = _row(
+        "exercise",
+        0.95,
+        "Выполните морфологический разбор деепричастий из 1-го и 3-го предложений.",
+        "russian.pdf",
+    )
+    exercise.meta = {"subject": "russian_language"}
+
+    scored, rejected = score_retrieval_candidates(query, [exercise], apply_noise_filter=False)
+    hit = scored[0]
+
+    assert not rejected
+    assert hit.full_phrase_match is True
+    assert hit.chunk_type == "exercise"
+    assert hit.exercise_demoted_for_concept_lookup is True
+    assert hit.full_term_boost_applied is False
+
+
+def test_required_term_missing_modifier_for_generic_review_definition():
+    query = "морфологический разбор"
+    review = _row("review", 0.95, "Рецензия - письменный разбор произведения.", "russian.pdf")
+    review.meta = {"subject": "russian_language"}
+
+    scored, rejected = score_retrieval_candidates(query, [review], apply_noise_filter=False)
+    hit = scored[0]
+
+    assert not rejected
+    assert hit.full_phrase_match is False
+    assert "морфологический" in hit.missing_required_terms
+    assert hit.term_penalty_applied is True
+
+
+def test_required_term_missing_modifier_for_wrong_analysis_type():
+    query = "синтаксический разбор"
+    morphology = _row("morphology", 0.95, "Морфологический разбор имени существительного.", "russian.pdf")
+    morphology.meta = {"subject": "russian_language"}
+
+    scored, rejected = score_retrieval_candidates(query, [morphology], apply_noise_filter=False)
+    hit = scored[0]
+
+    assert not rejected
+    assert hit.full_phrase_match is False
+    assert "синтаксический" in hit.missing_required_terms
+    assert hit.term_penalty_applied is True
+
+
+def test_required_term_full_phrase_for_math_theorem():
+    query = "теорема Пифагора"
+    theorem = _row("theorem", 0.45, "Теорема Пифагора: квадрат гипотенузы равен сумме квадратов катетов.", "math.pdf")
+    theorem.meta = {"subject": "math"}
+
+    scored, rejected = score_retrieval_candidates(query, [theorem], apply_noise_filter=False)
+    hit = scored[0]
+
+    assert not rejected
+    assert hit.full_phrase_match is True
+    assert hit.missing_required_terms == []
+    assert hit.required_term_score == 1.0
+    assert hit.required_term_match_type == "full_phrase_prefix"
+
+
+def test_concept_scoring_preserves_differences_between_full_phrase_schemas_exercises_and_partials():
+    query = "морфологический разбор"
+    complete_schema = _row(
+        "complete-schema",
+        0.65,
+        "Морфологический разбор глагола I. Часть речи. 1. Начальная форма. "
+        "2. Постоянные признаки. 3. Непостоянные признаки. III. Синтаксическая роль. "
+        "Указывается вид, переходность, возвратность, спряжение, наклонение, время, лицо или род, число.",
+        "russian.pdf",
+    )
+    complete_schema.meta = {"subject": "russian_language", "quality_score": 1.0}
+    short_schema = _row(
+        "short-schema",
+        0.65,
+        "Морфологический разбор имени существительного I. Часть речи. Общее грамматическое значение. II. Морфологические признаки.",
+        "russian.pdf",
+    )
+    short_schema.meta = {"subject": "russian_language", "quality_score": 0.5, "is_too_short": True}
+    exercise = _row(
+        "exercise",
+        0.95,
+        "Выполните морфологический разбор деепричастий из 1-го и 3-го предложений.",
+        "russian.pdf",
+    )
+    exercise.meta = {"subject": "russian_language"}
+    generic_definition = _row("generic-definition", 0.95, "Рецензия - письменный разбор произведения.", "russian.pdf")
+    generic_definition.meta = {"subject": "russian_language"}
+
+    scored, rejected = score_retrieval_candidates(query, [generic_definition, exercise, short_schema, complete_schema], apply_noise_filter=False)
+    by_id = {hit.fragment_id: hit for hit in scored}
+
+    assert not rejected
+    assert by_id["complete-schema"].score >= 0.9
+    assert by_id["complete-schema"].score < 1.0
+    assert by_id["complete-schema"].score > by_id["short-schema"].score
+    assert by_id["short-schema"].score > by_id["exercise"].score
+    assert by_id["exercise"].score > by_id["generic-definition"].score
+    assert by_id["complete-schema"].full_phrase_match is True
+    assert by_id["complete-schema"].term_penalty_applied is False
+    assert by_id["complete-schema"].concept_full_phrase_boost_value > 0
+    assert by_id["complete-schema"].section_title_boost_value > 0
+    assert by_id["complete-schema"].schema_or_rule_boost_value > 0
+    assert by_id["short-schema"].quality_penalty_value > by_id["complete-schema"].quality_penalty_value
+    assert by_id["short-schema"].boundary_penalty_value > 0
+    assert by_id["exercise"].exercise_penalty_value > 0
+    assert by_id["exercise"].exercise_demoted_for_concept_lookup is True
+    assert by_id["generic-definition"].missing_required_terms == ["морфологический"]
+    assert by_id["generic-definition"].term_penalty_applied is True
+
+
+def test_morphological_concept_query_excludes_test_and_navigation_from_top_reference_hits():
+    query = "Морфологический разбор"
+    schema_noun = _row(
+        "schema-noun",
+        0.48,
+        "Морфологический разбор имени существительного. I. Часть речи. II. Морфологические признаки. III. Синтаксическая роль.",
+        "russian.pdf",
+    )
+    schema_noun.meta = {
+        "subject": "russian_language",
+        "section_title": "Морфологический разбор имени существительного",
+        "section_path": ["Русский язык", "Морфологический разбор имени существительного"],
+    }
+    schema_verb = _row(
+        "schema-verb",
+        0.46,
+        "Морфологический разбор глагола. I. Часть речи. II. Постоянные и непостоянные признаки. III. Синтаксическая роль.",
+        "russian.pdf",
+    )
+    schema_verb.meta = {
+        "subject": "russian_language",
+        "section_title": "Морфологический разбор глагола",
+        "section_path": ["Русский язык", "Планы разборов", "Морфологический разбор глагола"],
+    }
+    test_question = _row(
+        "test-a4-a5",
+        0.99,
+        "А4. Часть речи неправильно определена. А5. Верно определены морфологические признаки у слова.",
+        "russian.pdf",
+    )
+    test_question.meta = {"subject": "russian_language"}
+    navigation = _row(
+        "nav-plans",
+        0.98,
+        "Приложение Планы разборов 238 Морфологический разбор имени существительного 239 Морфологический разбор глагола 240",
+        "russian.pdf",
+    )
+    navigation.page = 4
+    navigation.meta = {"subject": "russian_language"}
+    exercise = _row(
+        "exercise",
+        0.97,
+        "408. Выполните морфологический разбор причастий. Спишите предложения и подчеркните основы.",
+        "russian.pdf",
+    )
+    exercise.meta = {"subject": "russian_language"}
+
+    scored, rejected = score_retrieval_candidates(query, [test_question, navigation, exercise, schema_noun, schema_verb], apply_noise_filter=False)
+    by_id = {hit.fragment_id: hit for hit in scored}
+    selected = select_final_hits(scored, top_k=5, min_score=0.0)
+    selected_ids = [hit.fragment_id for hit in selected]
+
+    assert not rejected
+    assert selected_ids[:2] == ["schema-noun", "schema-verb"]
+    assert "test-a4-a5" not in selected_ids[:5]
+    assert "nav-plans" not in selected_ids
+    assert by_id["test-a4-a5"].chunk_type == "test_question"
+    assert by_id["test-a4-a5"].test_question_penalty_applied is True
+    assert by_id["test-a4-a5"].section_score == 0
+    assert by_id["nav-plans"].chunk_type == "navigation_index"
+    assert by_id["nav-plans"].is_navigation_index is True
+    assert by_id["schema-noun"].chunk_type == "schema_or_plan"
+    assert by_id["schema-noun"].schema_boost_applied is True
+    assert by_id["schema-noun"].section_score >= 0.8
+    assert by_id["schema-verb"].section_score >= 0.8
+
+
+def test_multiword_concept_required_term_ranks_exact_schemas_above_generic_definition():
+    query = "морфологический разбор"
+    review_definition = _row(
+        "review-definition",
+        0.99,
+        "Рецензия — отзыв, письменный разбор и оценка художественного или научного произведения.",
+        "russian.pdf",
+    )
+    review_definition.meta = {"subject": "russian_language"}
+    schema_participle = _row(
+        "schema-participle",
+        0.45,
+        "Морфологический разбор причастия. I. Часть речи. II. Морфологические признаки. III. Синтаксическая роль.",
+        "russian.pdf",
+    )
+    schema_participle.meta = {"subject": "russian_language"}
+    schema_verb = _row(
+        "schema-verb",
+        0.44,
+        "Морфологический разбор глагола. I. Часть речи. II. Постоянные и непостоянные признаки. III. Синтаксическая роль.",
+        "russian.pdf",
+    )
+    schema_verb.meta = {"subject": "russian_language"}
+    partial = _row(
+        "partial-morphology",
+        0.8,
+        "Морфологические признаки причастия: вид, время, возвратность и синтаксическая роль.",
+        "russian.pdf",
+    )
+    partial.meta = {"subject": "russian_language"}
+    exercise = _row(
+        "exercise-exact",
+        0.99,
+        "408. Выполните морфологический разбор причастий. Спишите предложения и подчеркните основы.",
+        "russian.pdf",
+    )
+    exercise.meta = {"subject": "russian_language", "is_toc": True}
+
+    scored, rejected = score_retrieval_candidates(query, [exercise, review_definition, partial, schema_participle, schema_verb], apply_noise_filter=False)
+    by_id = {hit.fragment_id: hit for hit in scored}
+    selected = select_final_hits(scored, top_k=10, min_score=0.0)
+    selected_ids = [hit.fragment_id for hit in selected]
+
+    assert not rejected
+    assert selected_ids[:2] == ["schema-participle", "schema-verb"]
+    assert "review-definition" not in selected_ids[:10]
+    assert by_id["schema-participle"].required_terms == ["морфологический разбор"]
+    assert by_id["schema-participle"].required_term_score == 1.0
+    assert by_id["schema-participle"].required_term_match_type == "full_phrase_prefix"
+    assert by_id["schema-participle"].schema_boost_applied is True
+    assert by_id["schema-participle"].intent_boost_applied is True
+    assert by_id["schema-participle"].full_term_boost_applied is True
+    assert by_id["schema-participle"].full_phrase_match is True
+    assert by_id["schema-participle"].concept_boost_applied is True
+    assert by_id["schema-participle"].schema_or_rule_boost_applied is True
+    assert by_id["schema-participle"].section_score >= 0.8
+    assert by_id["schema-participle"].inferred_section_title == "Морфологический разбор причастия"
+    assert by_id["schema-verb"].required_term_score == 1.0
+    assert by_id["schema-verb"].schema_boost_applied is True
+    assert by_id["review-definition"].chunk_type == "definition"
+    assert by_id["review-definition"].required_term_score <= 0.25
+    assert by_id["review-definition"].missing_required_terms == ["морфологический"]
+    assert by_id["review-definition"].intent_boost_applied is False
+    assert by_id["review-definition"].term_penalty_applied is True
+    assert by_id["review-definition"].section_score == 0
+    assert by_id["partial-morphology"].required_term_score <= 0.25
+    assert by_id["partial-morphology"].term_penalty_applied is True
+    assert by_id["exercise-exact"].required_term_score == 1.0
+    assert by_id["exercise-exact"].full_phrase_match is True
+    assert by_id["exercise-exact"].full_term_boost_applied is False
+    assert by_id["exercise-exact"].exercise_penalty_applied is True
+    assert by_id["exercise-exact"].exercise_demoted_for_concept_lookup is True
+    assert by_id["exercise-exact"].is_toc is False
+    assert by_id["exercise-exact"].low_text_quality_reason != "toc"
+    assert by_id["exercise-exact"].score < by_id["schema-participle"].score
+    assert "exercise-exact" not in selected_ids[:5]
+
+
+def test_morphological_concept_top5_prefers_schema_pages_over_exercises():
+    query = "морфологический разбор"
+    schemas = []
+    for idx, (name, page) in enumerate(
+        [
+            ("имени существительного", 238),
+            ("глагола", 239),
+            ("причастия", 240),
+            ("деепричастия", 240),
+            ("междометия", 241),
+        ],
+        start=1,
+    ):
+        schema = _row(
+            f"schema-{idx}",
+            0.42,
+            f"Морфологический разбор {name}. I. Часть речи. II. Морфологические признаки. III. Синтаксическая роль.",
+            "russian.pdf",
+        )
+        schema.page = page
+        schema.meta = {"subject": "russian_language"}
+        schemas.append(schema)
+    exercise = _row(
+        "exercise-high-dense",
+        0.99,
+        "408. Выполните морфологический разбор выделенных слов. Спишите предложения и объясните правописание.",
+        "russian.pdf",
+    )
+    exercise.meta = {"subject": "russian_language"}
+
+    scored, rejected = score_retrieval_candidates(query, [exercise, *schemas], apply_noise_filter=False)
+    selected = select_final_hits(scored, top_k=5, min_score=0.0)
+
+    assert not rejected
+    assert len(selected) == 5
+    assert all(hit.chunk_type == "schema_or_plan" for hit in selected)
+    assert all(hit.required_term_score == 1.0 for hit in selected)
+    assert all(hit.schema_boost_applied for hit in selected)
+    assert {hit.page for hit in selected} <= {238, 239, 240, 241}
+    assert "exercise-high-dense" not in [hit.fragment_id for hit in selected]
+
+
+@pytest.mark.parametrize(
+    ("query", "exact_text", "generic_text"),
+    [
+        (
+            "морфологический разбор",
+            "Морфологический разбор имени числительного. I. Часть речи. II. Морфологические признаки.",
+            "1, 2. См. разбор сложносочинённого предложения.",
+        ),
+        (
+            "синтаксический разбор",
+            "Синтаксический разбор предложения. I. Вид предложения. II. Грамматическая основа.",
+            "Письменный разбор текста помогает понять его композицию.",
+        ),
+        (
+            "квадратное уравнение",
+            "Квадратное уравнение — это уравнение вида ax2 + bx + c = 0.",
+            "Линейное уравнение и способы его решения.",
+        ),
+        (
+            "гражданская оборона",
+            "Гражданская оборона включает защиту населения и средства оповещения.",
+            "Оборона государства связана с военной безопасностью.",
+        ),
+    ],
+)
+def test_multiword_concept_required_terms_prefer_full_term_over_generic_token_match(query, exact_text, generic_text):
+    exact = _row("exact", 0.45, exact_text, "subject.pdf")
+    generic = _row("generic", 0.95, generic_text, "subject.pdf")
+
+    scored, rejected = score_retrieval_candidates(query, [generic, exact], apply_noise_filter=False)
+    by_id = {hit.fragment_id: hit for hit in scored}
+
+    assert not rejected
+    assert by_id["exact"].required_term_score >= 0.8
+    assert by_id["exact"].full_term_boost_applied is True
+    assert by_id["generic"].required_term_score <= 0.25
+    assert by_id["generic"].term_penalty_applied is True
+    assert scored[0].fragment_id == "exact"
+
+
+def test_exercise_lookup_allows_exercise_chunks_to_rank_high():
+    query = "упражнения на морфологический разбор"
+    schema = _row(
+        "schema",
+        0.55,
+        "Порядок морфологического разбора имени существительного. I. Часть речи. II. Морфологические признаки.",
+        "russian.pdf",
+    )
+    schema.meta = {"subject": "russian_language"}
+    exercise = _row(
+        "exercise",
+        0.55,
+        "408. Выполните морфологический разбор причастий. Найдите грамматические признаки и синтаксическую роль.",
+        "russian.pdf",
+    )
+    exercise.meta = {"subject": "russian_language"}
+
+    scored, rejected = score_retrieval_candidates(query, [schema, exercise], apply_noise_filter=False)
+    by_id = {hit.fragment_id: hit for hit in scored}
+
+    assert not rejected
+    assert by_id["exercise"].chunk_type == "exercise"
+    assert by_id["exercise"].intent_boost_applied is True
+    assert by_id["exercise"].exercise_penalty_applied is False
+    assert scored[0].fragment_id == "exercise"
+
+
+def test_exercise_lookup_does_not_penalize_test_or_exercise_chunks():
+    query = "упражнения на морфологический разбор"
+    test_question = _row(
+        "test-question",
+        0.65,
+        "А1. Укажите верный ответ. 1) имя существительное 2) глагол 3) союз 4) частица.",
+        "russian.pdf",
+    )
+    test_question.meta = {"subject": "russian_language"}
+    exercise = _row(
+        "exercise",
+        0.6,
+        "408. Выполните морфологический разбор причастий. Найдите грамматические признаки.",
+        "russian.pdf",
+    )
+    exercise.meta = {"subject": "russian_language"}
+    schema = _row(
+        "schema",
+        0.55,
+        "Морфологический разбор причастия. I. Часть речи. II. Морфологические признаки. III. Синтаксическая роль.",
+        "russian.pdf",
+    )
+    schema.meta = {"subject": "russian_language", "section_title": "Морфологический разбор причастия"}
+
+    scored, rejected = score_retrieval_candidates(query, [schema, exercise, test_question], apply_noise_filter=False)
+    by_id = {hit.fragment_id: hit for hit in scored}
+    selected = select_final_hits(scored, top_k=5, min_score=0.0)
+
+    assert not rejected
+    assert by_id["exercise"].exercise_penalty_applied is False
+    assert by_id["test-question"].test_question_penalty_applied is False
+    assert by_id["exercise"].intent_boost_applied is True
+    assert by_id["test-question"].intent_boost_applied is True
+    assert any(hit.chunk_type in {"exercise", "test_question"} for hit in selected[:5])
+
+
+def test_syntax_analysis_concept_query_prefers_real_plan_over_random_exercise():
+    query = "синтаксический разбор предложения"
+    schema = _row(
+        "syntax-schema",
+        0.48,
+        "Синтаксический разбор предложения. I. Вид предложения. II. Грамматическая основа. III. Второстепенные члены.",
+        "russian.pdf",
+    )
+    schema.meta = {
+        "subject": "russian_language",
+        "section_title": "Синтаксический разбор предложения",
+        "section_path": ["Русский язык", "Синтаксический разбор предложения"],
+    }
+    exercise = _row(
+        "syntax-exercise",
+        0.93,
+        "317. Спишите предложения. Выполните синтаксический разбор одного предложения и подчеркните члены предложения.",
+        "russian.pdf",
+    )
+    exercise.meta = {"subject": "russian_language"}
+
+    scored, rejected = score_retrieval_candidates(query, [exercise, schema], apply_noise_filter=False)
+    by_id = {hit.fragment_id: hit for hit in scored}
+
+    assert not rejected
+    assert by_id["syntax-schema"].chunk_type == "schema_or_plan"
+    assert by_id["syntax-schema"].section_score >= 0.8
+    assert by_id["syntax-exercise"].chunk_type == "exercise"
+    assert by_id["syntax-exercise"].exercise_penalty_applied is True
+    assert scored[0].fragment_id == "syntax-schema"
+
+
+def test_math_concept_query_prefers_theorem_explanation_over_exercise():
+    query = "теорема Пифагора"
+    theorem = _row(
+        "theorem",
+        0.45,
+        "Теорема Пифагора: квадрат гипотенузы равен сумме квадратов катетов. Формула используется в прямоугольном треугольнике.",
+        "math.pdf",
+    )
+    theorem.meta = {"subject": "math"}
+    exercise = _row(
+        "exercise",
+        0.98,
+        "27. Решите задачу, используя теорему Пифагора. Найдите неизвестную сторону треугольника.",
+        "math.pdf",
+    )
+    exercise.meta = {"subject": "math"}
+
+    scored, rejected = score_retrieval_candidates(query, [exercise, theorem], apply_noise_filter=False)
+    by_id = {hit.fragment_id: hit for hit in scored}
+
+    assert not rejected
+    assert by_id["theorem"].required_term_score >= 0.8
+    assert by_id["theorem"].full_phrase_match is True
+    assert by_id["theorem"].concept_boost_applied is True
+    assert by_id["exercise"].chunk_type == "exercise"
+    assert by_id["exercise"].exercise_demoted_for_concept_lookup is True
+    assert by_id["exercise"].full_term_boost_applied is False
+    assert scored[0].fragment_id == "theorem"
+
+
+def test_history_concept_query_keeps_exact_modifier_above_wrong_alexander():
+    query = "правление Александра I"
+    exact = _row(
+        "exact-i",
+        0.52,
+        "Правление Александра I: первые реформы, Негласный комитет и внутренняя политика.",
+        "history.pdf",
+    )
+    exact.meta = {"subject": "history"}
+    wrong = _row(
+        "wrong-ii",
+        0.96,
+        "Правление Александра II связано с реформами второй половины XIX века.",
+        "history.pdf",
+    )
+    wrong.meta = {"subject": "history"}
+    partial = _row(
+        "partial-name",
+        0.93,
+        "Александр проводил государственные преобразования и укреплял власть.",
+        "history.pdf",
+    )
+    partial.meta = {"subject": "history"}
+
+    scored, rejected = score_retrieval_candidates(query, [wrong, partial, exact], apply_noise_filter=False)
+    by_id = {hit.fragment_id: hit for hit in scored}
+
+    assert not rejected
+    assert by_id["exact-i"].matched_phrases == ["александра i"]
+    assert by_id["exact-i"].phrase_score >= 0.75
+    assert by_id["wrong-ii"].wrong_entity_modifier is True
+    assert by_id["wrong-ii"].score < by_id["exact-i"].score
+    assert by_id["partial-name"].phrase_score <= 0.2
+    assert scored[0].fragment_id == "exact-i"
+
+
+def test_reference_intent_smoke_queries_rank_explanatory_chunks_before_exercises_and_toc():
+    queries = [
+        (
+            "Александр I и его правление",
+            _row("history-context", 0.55, "Александр I и его правление: реформы, Негласный комитет и внешняя политика.", "history.pdf"),
+            _row("history-toc", 0.9, "Содержание Александр I и его правление 12 Отечественная война 1812 года 18", "history.pdf"),
+        ),
+        (
+            "АСДНР при чрезвычайных ситуациях",
+            _row("safety-context", 0.55, "АСДНР при чрезвычайных ситуациях включает спасательные и другие неотложные работы.", "safety.pdf"),
+            _row("safety-task", 0.9, "12. Выполните задание. Назовите средства гражданской обороны и порядок действий.", "safety.pdf"),
+        ),
+        (
+            "квадратное уравнение",
+            _row("math-rule", 0.55, "Квадратное уравнение - это уравнение вида ax2 + bx + c = 0. Формула корней использует дискриминант.", "math.pdf"),
+            _row("math-task", 0.9, "25. Решите квадратные уравнения и запишите ответы.", "math.pdf"),
+        ),
+    ]
+    for query, reference, lower_priority in queries:
+        reference.meta = {"subject": analyze_query(query)["primary_subject"]}
+        lower_priority.meta = {"subject": analyze_query(query)["primary_subject"]}
+        scored, _ = score_retrieval_candidates(query, [lower_priority, reference], apply_noise_filter=False)
+        assert scored[0].fragment_id == reference.fragment_id
+        assert scored[0].score > {hit.fragment_id: hit for hit in scored}[lower_priority.fragment_id].score
+
+
 def test_table_of_contents_is_penalized_below_content_chunk():
     query = "Отечественная война 1812 года"
     analysis = analyze_query(query)
@@ -300,7 +1029,7 @@ def test_table_of_contents_is_penalized_below_content_chunk():
     content = _row("content", 0.55, "Отечественная война 1812 года: причины, ход войны и Бородинское сражение.", "history.pdf")
     content.subject_score = 0.9
 
-    scored, _ = score_retrieval_candidates(query, [toc, content], query_analysis=analysis)
+    scored, _ = score_retrieval_candidates(query, [toc, content], query_analysis=analysis, apply_noise_filter=False)
     by_id = {hit.fragment_id: hit for hit in scored}
 
     assert by_id["content"].score > by_id["toc"].score
@@ -333,6 +1062,29 @@ def test_flat_table_of_contents_page_is_detected_and_excluded_from_final_hits():
     assert by_id["769f3ab9efdb18894d6360316bce4c14"].toc_penalty_applied is True
     assert "769f3ab9efdb18894d6360316bce4c14" not in [hit.fragment_id for hit in selected]
     assert selected[0].fragment_id == "content"
+
+
+def test_low_quality_fragmented_chunk_is_filtered_from_final_hits():
+    query = "Морфологический разбор"
+    broken = _row("broken", 0.9, "пинания. Выполните морфологический разбор причастий.", "russian.pdf")
+    broken.meta = {"subject": "russian_language"}
+    good = _row(
+        "good",
+        0.55,
+        "Морфологический разбор причастия включает определение грамматических признаков и синтаксической роли.",
+        "russian.pdf",
+    )
+    good.meta = {"subject": "russian_language"}
+
+    assert text_quality_flags(broken.text)["low_text_quality"] is True
+    scored, _ = score_retrieval_candidates(query, [broken, good], apply_noise_filter=False)
+    by_id = {hit.fragment_id: hit for hit in scored}
+    selected = select_final_hits(scored, top_k=5, min_score=0.0)
+
+    assert by_id["broken"].low_text_quality is True
+    assert by_id["broken"].quality_score < by_id["good"].quality_score
+    assert "broken" not in [hit.fragment_id for hit in selected]
+    assert selected[0].fragment_id == "good"
 
 
 def test_multi_query_fusion_uses_weighted_max_score():

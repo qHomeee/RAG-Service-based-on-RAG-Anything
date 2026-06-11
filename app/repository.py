@@ -14,11 +14,16 @@ from app.config import settings
 from app.document_intelligence import (
     analyze_query,
     cosine_similarity,
+    detect_chunk_type,
+    detect_chunk_type_details,
+    infer_section_title_details,
+    infer_section_title,
     is_toc_text,
     profile_lexical_score,
     profile_subject_score,
     profile_text,
     subject_expansions_for_query,
+    text_quality_flags,
 )
 from app.embeddings import EmbeddingProvider
 from app.models import Document, Embedding, Fragment
@@ -62,6 +67,48 @@ class RetrievalRow:
     is_toc: bool = False
     toc_filtered: bool = False
     toc_penalty_applied: bool = False
+    quality_score: float = 1.0
+    is_index: bool = False
+    is_bibliography: bool = False
+    is_caption: bool = False
+    is_fragmented: bool = False
+    is_too_short: bool = False
+    starts_mid_word: bool = False
+    low_text_quality: bool = False
+    low_quality_filtered: bool = False
+    low_text_quality_reason: str | None = None
+    query_type: str = "unknown"
+    chunk_type: str = "unknown"
+    chunk_type_reason: str | None = None
+    section_title_reason: str | None = None
+    inferred_section_title: str | None = None
+    required_terms: list[str] = field(default_factory=list)
+    required_term_score: float = 0.0
+    required_term_match_type: str = "none"
+    is_navigation_index: bool = False
+    navigation_filtered: bool = False
+    intent_boost_applied: bool = False
+    exercise_penalty_applied: bool = False
+    test_question_penalty_applied: bool = False
+    schema_boost_applied: bool = False
+    term_penalty_applied: bool = False
+    full_term_boost_applied: bool = False
+    full_phrase_match: bool = False
+    missing_required_terms: list[str] = field(default_factory=list)
+    concept_boost_applied: bool = False
+    exercise_demoted_for_concept_lookup: bool = False
+    schema_or_rule_boost_applied: bool = False
+    final_rank_reason: str | None = None
+    score_before_boosts: float = 0.0
+    concept_full_phrase_boost_value: float = 0.0
+    section_title_boost_value: float = 0.0
+    schema_or_rule_boost_value: float = 0.0
+    quality_penalty_value: float = 0.0
+    boundary_penalty_value: float = 0.0
+    exercise_penalty_value: float = 0.0
+    score_after_boosts_before_clamp: float = 0.0
+    expanded_from_neighbors: bool = False
+    penalties_applied: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -92,6 +139,19 @@ class PhraseModifierMatch:
     wrong_entity_modifier: bool
     phrase_score_before_penalty: float
     phrase_score_after_penalty: float
+
+
+@dataclass(frozen=True)
+class RequiredTermMatch:
+    required_terms: list[str]
+    score: float
+    match_type: str
+
+
+@dataclass(frozen=True)
+class RequiredTermSignals:
+    full_phrase_match: bool
+    missing_required_terms: list[str]
 
 
 class RagRepository:
@@ -134,7 +194,8 @@ class RagRepository:
         self.db.flush()
 
         count = 0
-        for idx, subchunk in enumerate(split_to_subchunks(fragment.text)):
+        embedding_text = str((fragment.meta or {}).get("search_text") or fragment.text)
+        for idx, subchunk in enumerate(split_to_subchunks(embedding_text)):
             emb = self.embeddings.embed(subchunk)
             self.db.add(
                 Embedding(
@@ -142,7 +203,7 @@ class RagRepository:
                     subchunk_index=idx,
                     text=subchunk,
                     embedding=emb,
-                    meta={"offset": idx},
+                    meta={"offset": idx, "search_text": True},
                 )
             )
             count += 1
@@ -156,8 +217,20 @@ class RagRepository:
         collection: str,
         source_uris: list[str] | None,
         include_toc: bool = False,
+        include_low_quality: bool = False,
+        include_navigation: bool = False,
     ) -> list[RetrievalRow]:
-        return self.retrieve_with_debug(query, top_k, min_score, collection, source_uris, include_toc=include_toc, debug=False).hits
+        return self.retrieve_with_debug(
+            query,
+            top_k,
+            min_score,
+            collection,
+            source_uris,
+            include_toc=include_toc,
+            include_low_quality=include_low_quality,
+            include_navigation=include_navigation,
+            debug=False,
+        ).hits
 
     def retrieve_with_debug(
         self,
@@ -167,6 +240,8 @@ class RagRepository:
         collection: str,
         source_uris: list[str] | None,
         include_toc: bool = False,
+        include_low_quality: bool = False,
+        include_navigation: bool = False,
         *,
         debug: bool = False,
     ) -> RetrievalResult:
@@ -189,8 +264,12 @@ class RagRepository:
             "min_score": min_score,
             "collection": collection,
             "include_toc": include_toc,
+            "include_low_quality": include_low_quality,
+            "include_navigation": include_navigation,
             "query_analysis": query_analysis,
+            "query_type": query_analysis.get("query_type", "unknown"),
             "detected_subjects": query_analysis.get("detected_subjects", []),
+            "required_terms": query_analysis.get("required_terms", []),
             "exact_phrases": query_analysis.get("exact_phrases") or [_format_phrase(phrase.tokens) for phrase in required_exact_phrases],
             "expanded_queries": expanded_queries,
             "reranker_used": False,
@@ -260,6 +339,7 @@ class RagRepository:
             logger.debug("retrieval_empty_after_fusion", extra=diagnostics)
             return RetrievalResult(hits=[], debug=diagnostics if debug else None)
 
+        fused_candidates = self._expand_context(fused_candidates)
         preliminary_scored, rejected = score_retrieval_candidates(
             normalized_query,
             fused_candidates,
@@ -304,6 +384,12 @@ class RagRepository:
         for hit in scored_candidates:
             if hit.is_toc and not include_toc:
                 diagnostics["rejected_results"].append(_debug_hit(replace(hit, rejection_reason="toc_filtered", toc_filtered=True)))
+                continue
+            if hit.low_text_quality and not include_low_quality:
+                diagnostics["rejected_results"].append(_debug_hit(replace(hit, rejection_reason="low_text_quality_filtered", low_quality_filtered=True)))
+                continue
+            if hit.is_navigation_index and not include_navigation:
+                diagnostics["rejected_results"].append(_debug_hit(replace(hit, rejection_reason="navigation_filtered", navigation_filtered=True)))
                 continue
             if hit.final_score >= min_score:
                 thresholded.append(hit)
@@ -513,21 +599,69 @@ class RagRepository:
             rows = self.db.execute(
                 text(
                     """
-                    SELECT text
-                    FROM fragments
-                    WHERE doc_id = CAST(:doc_id AS uuid)
-                      AND element_index BETWEEN :start_idx AND :end_idx
-                    ORDER BY element_index ASC
+                    WITH ordered AS (
+                        SELECT
+                            text,
+                            meta,
+                            page,
+                            element_index,
+                            row_number() OVER (ORDER BY element_index ASC) AS rn
+                        FROM fragments
+                        WHERE doc_id = CAST(:doc_id AS uuid)
+                    ),
+                    target AS (
+                        SELECT rn, page, meta
+                        FROM ordered
+                        WHERE element_index = :element_index
+                        LIMIT 1
+                    )
+                    SELECT o.text, o.meta, o.page, o.element_index
+                    FROM ordered o, target t
+                    WHERE o.rn BETWEEN t.rn - :neighbors AND t.rn + :neighbors
+                    ORDER BY o.rn ASC
                     """
                 ),
                 {
                     "doc_id": hit.doc_id,
-                    "start_idx": hit.element_index - neighbors,
-                    "end_idx": hit.element_index + neighbors,
+                    "element_index": hit.element_index,
+                    "neighbors": neighbors,
                 },
             ).mappings().all()
-            context = normalize_context(" ".join(row["text"] for row in rows), settings.context_expansion_max_chars)
-            expanded.append(replace(hit, text=context or hit.text))
+            if not rows:
+                expanded.append(hit)
+                continue
+
+            same_scope = _same_context_scope(hit, rows)
+            context_rows = same_scope or rows
+            context = normalize_context(" ".join(str(row["text"]) for row in context_rows if row["text"]), settings.context_expansion_max_chars)
+            if not context or context == hit.text:
+                expanded.append(hit)
+                continue
+
+            meta = dict(hit.meta or {})
+            meta.setdefault("search_text", hit.text)
+            meta.setdefault("search_snippet", hit.snippet)
+            if hit.chunk_type and hit.chunk_type != "unknown":
+                meta.setdefault("chunk_type", hit.chunk_type)
+            if hit.chunk_type_reason:
+                meta.setdefault("chunk_type_reason", hit.chunk_type_reason)
+            meta["expanded_text"] = context
+            meta["expanded_from_neighbors"] = True
+            quality = text_quality_flags(context, page=hit.page, meta=meta)
+            expanded.append(
+                replace(
+                    hit,
+                    text=context,
+                    meta=meta,
+                    expanded_from_neighbors=True,
+                    is_fragmented=bool(quality.get("is_fragmented")),
+                    is_too_short=bool(quality.get("is_too_short")),
+                    starts_mid_word=bool(quality.get("starts_mid_word")),
+                    low_text_quality=bool(quality.get("low_text_quality")),
+                    quality_score=max(hit.quality_score, float(quality.get("quality_score") or hit.quality_score)),
+                    low_text_quality_reason=quality.get("low_text_quality_reason"),
+                )
+            )
         return expanded
 
     def _dense_recall(
@@ -1288,25 +1422,314 @@ def lexical_overlap(query_terms: list[str], text_value: str) -> float:
     return matched / len(query_terms)
 
 
+def _required_terms_for_scoring(query: str, query_analysis: dict[str, Any]) -> list[str]:
+    analysis_terms = query_analysis.get("required_terms")
+    if isinstance(analysis_terms, list):
+        terms = [str(term).strip().lower().replace("ё", "е") for term in analysis_terms if str(term).strip()]
+        if terms:
+            return terms
+    if query_analysis.get("query_type") != "concept_lookup":
+        return []
+    if _required_exact_phrases_for_query(query):
+        return []
+    terms = _query_terms_for_scoring(query)
+    if 2 <= len(terms) <= 5:
+        return [" ".join(terms)]
+    return []
+
+
+def required_term_match_score(required_terms: list[str], text_value: str) -> RequiredTermMatch:
+    normalized_terms = [normalize_for_required_term(term) for term in required_terms if _tokenize(term)]
+    if not normalized_terms:
+        return RequiredTermMatch(required_terms=[], score=0.0, match_type="none")
+    normalized_text = normalize_for_required_term(text_value)
+    text_tokens = tokenize_required_text(normalized_text)
+    if not text_tokens:
+        return RequiredTermMatch(required_terms=normalized_terms, score=0.0, match_type="none")
+
+    best_score = 0.0
+    best_type = "none"
+    type_rank = {"none": 0, "partial": 1, "all_terms": 2, "full_phrase": 3, "full_phrase_prefix": 4}
+    text_forms = set(_matching_tokens(text_value))
+
+    for term in normalized_terms:
+        term_tokens = tuple(tokenize_required_text(term))
+        if not term_tokens:
+            continue
+        exact_prefix = bool(term and (normalized_text == term or normalized_text.startswith(f"{term} ")))
+        exact_anywhere = bool(term and f" {term} " in f" {normalized_text} ")
+        ordered_phrase = has_ordered_phrase(term_tokens, text_tokens)
+        if exact_prefix:
+            score, match_type = 1.0, "full_phrase_prefix"
+        elif exact_anywhere or ordered_phrase:
+            score, match_type = 1.0, "full_phrase"
+        elif _all_terms_match(term_tokens, text_forms):
+            score, match_type = 0.8, "all_terms"
+        else:
+            matched = sum(1 for token in term_tokens if _lexical_forms(token) & text_forms)
+            if matched:
+                score = min(0.25, 0.25 * matched / len(term_tokens))
+                match_type = "partial"
+            else:
+                score, match_type = 0.0, "none"
+        if score > best_score or (math.isclose(score, best_score) and type_rank[match_type] > type_rank[best_type]):
+            best_score = score
+            best_type = match_type
+
+    return RequiredTermMatch(required_terms=normalized_terms, score=_clamp_score(best_score), match_type=best_type)
+
+
+def normalize_for_required_term(text_value: str) -> str:
+    normalized = (text_value or "").lower().replace("ё", "е").replace("\u00ad", "")
+    normalized = re.sub(r"(?<=\w)-\s*\n\s*(?=\w)", "", normalized)
+    normalized = re.sub(r"(?<=\w)-\s+(?=\w)", "", normalized)
+    normalized = re.sub(r"[\r\n\t]+", " ", normalized)
+    normalized = re.sub(r"[^\w\s]+", " ", normalized, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def tokenize_required_text(text_value: str) -> list[str]:
+    return re.findall(r"[a-zа-я0-9]+", normalize_for_required_term(text_value), flags=re.IGNORECASE)
+
+
+def has_ordered_phrase(query_terms: tuple[str, ...] | list[str], text_tokens: list[str]) -> bool:
+    term_len = len(query_terms)
+    if term_len <= 0 or len(text_tokens) < term_len:
+        return False
+    phrase = tuple(query_terms)
+    return any(
+        _phrase_window_matches(phrase, text_tokens[idx : idx + term_len])
+        for idx in range(0, len(text_tokens) - term_len + 1)
+    )
+
+
+def _all_terms_match(query_terms: tuple[str, ...] | list[str], text_forms: set[str]) -> bool:
+    return bool(query_terms) and all(_lexical_forms(token) & text_forms for token in query_terms)
+
+
+def _normalize_required_term_text(text_value: str) -> str:
+    return normalize_for_required_term(text_value)
+
+
+def _candidate_required_term_text(row: RetrievalRow, meta: dict[str, Any]) -> str:
+    parts: list[str] = []
+    seen_parts: set[str] = set()
+    def add_part(value: Any) -> None:
+        if not isinstance(value, str) or not value.strip():
+            return
+        normalized = normalize_for_required_term(value)
+        if normalized in seen_parts:
+            return
+        seen_parts.add(normalized)
+        parts.append(value)
+
+    for value in (row.text, row.snippet, meta.get("expanded_text")):
+        add_part(value)
+    for key in ("section_title", "inferred_section_title", "parent_heading", "heading", "nearest_heading"):
+        add_part(meta.get(key))
+    for key in ("section_path", "heading_path", "nearest_headings"):
+        value = meta.get(key)
+        if isinstance(value, list):
+            for item in value:
+                add_part(str(item))
+    return " ".join(parts)
+
+
+def required_term_signals(required_terms: list[str], text_value: str, match: RequiredTermMatch) -> RequiredTermSignals:
+    full_phrase_match = bool(required_terms) and match.match_type in {"full_phrase_prefix", "full_phrase"} and match.score >= 0.8
+    if not required_terms:
+        return RequiredTermSignals(full_phrase_match=False, missing_required_terms=[])
+
+    text_forms = set(_matching_tokens(text_value))
+    missing: list[str] = []
+    seen: set[str] = set()
+    for term in required_terms:
+        for token in _tokenize(term):
+            if token in QUERY_STOPWORDS or _is_weak_standalone_token(token):
+                continue
+            if _lexical_forms(token) & text_forms:
+                continue
+            if token not in seen:
+                missing.append(token)
+                seen.add(token)
+    return RequiredTermSignals(full_phrase_match=full_phrase_match, missing_required_terms=missing)
+
+
+def section_title_startswith_required_term(required_terms: list[str], meta: dict[str, Any]) -> bool:
+    section_values: list[str] = []
+    for key in ("section_title", "inferred_section_title", "parent_heading"):
+        value = meta.get(key)
+        if isinstance(value, str) and value.strip():
+            section_values.append(value)
+    for section in section_values:
+        section_norm = normalize_for_required_term(section)
+        section_tokens = tokenize_required_text(section)
+        for term in required_terms:
+            term_norm = normalize_for_required_term(term)
+            term_tokens = tokenize_required_text(term)
+            if term_norm and (section_norm == term_norm or section_norm.startswith(f"{term_norm} ")):
+                return True
+            if section_tokens[: len(term_tokens)] and _phrase_window_matches(tuple(term_tokens), section_tokens[: len(term_tokens)]):
+                return True
+    return False
+
+
+def concept_boundary_penalty(required_terms: list[str], text_value: str, *, chunk_type: str) -> float:
+    if chunk_type != "schema_or_plan" or not required_terms:
+        return 0.0
+    text_tokens = tokenize_required_text(text_value)
+    if not text_tokens:
+        return 0.0
+
+    repeated_phrase = False
+    for term in required_terms:
+        term_tokens = tuple(tokenize_required_text(term))
+        if not term_tokens:
+            continue
+        positions = [
+            idx
+            for idx in range(0, len(text_tokens) - len(term_tokens) + 1)
+            if _phrase_window_matches(term_tokens, text_tokens[idx : idx + len(term_tokens)])
+        ]
+        if len(positions) >= 2 and positions[-1] - positions[0] >= len(term_tokens) + 4:
+            repeated_phrase = True
+            break
+
+    marker_count = len(re.findall(r"(?<![A-Za-zА-Яа-яЁё])(?:[IVXLCDM]+|[1-9]\d*)\s*[.)]", text_value or ""))
+    incomplete_schema = marker_count < 3
+    penalty = 0.0
+    if repeated_phrase:
+        penalty += settings.retrieval_concept_boundary_penalty_value
+    if incomplete_schema:
+        penalty += min(0.06, settings.retrieval_concept_boundary_penalty_value)
+    return min(settings.retrieval_concept_boundary_penalty_value + 0.06, penalty)
+
+
 def section_match_score(query: str, query_terms: list[str], meta: dict[str, Any] | None) -> float:
     meta = meta or {}
     section_parts: list[str] = []
-    for key in ("section_title", "heading", "title"):
+    for key in ("section_title", "inferred_section_title", "parent_heading", "heading", "nearest_heading"):
         value = meta.get(key)
-        if isinstance(value, str):
-            section_parts.append(value)
-    for key in ("section_path", "heading_path"):
+        if isinstance(value, str) and _is_valid_section_component(value):
+            section_parts.append(_normalize_section_component(value))
+    for key in ("section_path", "heading_path", "nearest_headings"):
         value = meta.get(key)
         if isinstance(value, list):
-            section_parts.extend(str(item) for item in value if item)
+            section_parts.extend(_normalize_section_component(str(item)) for item in value if item and _is_valid_section_component(str(item)))
     section_text = " ".join(section_parts)
     if not section_text:
         return 0.0
-    return max(
+    score = max(
         lexical_overlap(query_terms, section_text),
         phrase_match_score(query, section_text),
         weighted_phrase_term_score(query, section_text),
     )
+    if query_terms and section_text:
+        section_forms = set(_matching_tokens(section_text))
+        matched_terms = sum(1 for term in query_terms if _lexical_forms(term) & section_forms)
+        if matched_terms:
+            score = max(score, min(1.0, 0.35 + 0.2 * matched_terms))
+    return _clamp_score(score)
+
+
+def _normalize_section_component(value: str) -> str:
+    details = infer_section_title_details(value)
+    title = details.get("section_title")
+    return str(title or re.sub(r"\s+", " ", value.strip()))
+
+
+def _is_valid_section_component(value: str) -> bool:
+    details = infer_section_title_details(value)
+    return bool(details.get("section_title"))
+
+
+def _metadata_with_inferred_section(row: RetrievalRow) -> dict[str, Any]:
+    meta = dict(row.meta or {})
+    section_details = infer_section_title_details(row.text or row.snippet or "", meta=meta)
+    section_title = section_details.get("section_title")
+    section_path = section_details.get("section_path") or []
+    meta["section_title"] = section_title
+    meta["inferred_section_title"] = section_title
+    meta["parent_heading"] = section_title
+    meta["section_title_reason"] = section_details.get("section_title_reason")
+    meta["section_path"] = section_path
+    chunk_source = str(meta.get("search_text") or row.text or row.snippet or "")
+    chunk_details = detect_chunk_type_details(chunk_source, meta=meta, page=row.page)
+    meta["chunk_type"] = meta.get("chunk_type") or chunk_details.get("chunk_type", "unknown")
+    meta["chunk_type_reason"] = meta.get("chunk_type_reason") or chunk_details.get("chunk_type_reason")
+    meta["is_navigation_index"] = meta["chunk_type"] == "navigation_index"
+    return meta
+
+
+def _candidate_subject_score(query_analysis: dict[str, Any], row: RetrievalRow) -> float:
+    if not math.isclose(row.subject_score, 0.5, abs_tol=1e-9):
+        return _clamp_score(row.subject_score)
+    meta = row.meta or {}
+    subject = meta.get("subject")
+    if not subject:
+        return 0.5
+    return profile_subject_score(query_analysis, {"subject": subject})
+
+
+def _candidate_quality(row: RetrievalRow) -> dict[str, Any]:
+    flags = text_quality_flags(row.text or row.snippet or "", page=row.page, meta=row.meta)
+    meta = row.meta or {}
+    for key in (
+        "is_toc",
+        "is_index",
+        "is_bibliography",
+        "is_caption",
+        "is_fragmented",
+        "is_too_short",
+        "starts_mid_word",
+        "low_text_quality",
+    ):
+        if meta.get(key) is True:
+            flags[key] = True
+    if "quality_score" in meta:
+        try:
+            flags["quality_score"] = min(float(flags.get("quality_score", 1.0)), float(meta["quality_score"]))
+        except (TypeError, ValueError):
+            pass
+    chunk_details = detect_chunk_type_details(row.text or row.snippet or "", meta=meta, page=row.page)
+    flags["chunk_type"] = meta.get("chunk_type") or chunk_details.get("chunk_type") or "unknown"
+    flags["chunk_type_reason"] = meta.get("chunk_type_reason") or chunk_details.get("chunk_type_reason")
+    flags["is_navigation_index"] = bool(meta.get("is_navigation_index") is True or flags["chunk_type"] == "navigation_index")
+    if flags.get("low_text_quality"):
+        flags["quality_score"] = min(float(flags.get("quality_score", 1.0)), 0.25)
+    return flags
+
+
+def _penalties_applied(
+    *,
+    is_toc: bool,
+    low_text_quality: bool,
+    wrong_entity_modifier: bool,
+    subject_confidence: float,
+    subject_score: float,
+    required_exact_phrase_missing: bool,
+    exercise_penalty_applied: bool = False,
+    test_question_penalty_applied: bool = False,
+    term_penalty_applied: bool = False,
+) -> list[str]:
+    penalties: list[str] = []
+    if is_toc:
+        penalties.append("toc_penalty")
+    if low_text_quality:
+        penalties.append("low_text_quality_penalty")
+    if wrong_entity_modifier:
+        penalties.append("wrong_entity_modifier_penalty")
+    if required_exact_phrase_missing:
+        penalties.append("missing_required_modifier_penalty")
+    if exercise_penalty_applied:
+        penalties.append("exercise_intent_penalty")
+    if test_question_penalty_applied:
+        penalties.append("test_question_intent_penalty")
+    if term_penalty_applied:
+        penalties.append("required_term_penalty")
+    if subject_confidence >= settings.retrieval_subject_confidence_threshold and subject_score <= settings.retrieval_subject_mismatch_score:
+        penalties.append("subject_mismatch_penalty")
+    return penalties
 
 
 def _is_toc_fragment(row: RetrievalRow) -> bool:
@@ -1390,6 +1813,7 @@ def _final_score(
     lexical_score: float,
     lexical_overlap_score: float,
     phrase_score: float,
+    section_score: float,
     anchor_score: float,
     topic_score: float,
     subject_score: float,
@@ -1399,6 +1823,8 @@ def _final_score(
     required_exact_phrase_missing: bool,
     wrong_entity_modifier: bool,
     is_toc: bool,
+    low_text_quality: bool,
+    quality_score: float,
     rerank_score: float | None,
     rrf_score: float,
     document_score: float,
@@ -1409,9 +1835,11 @@ def _final_score(
         (settings.retrieval_dense_weight, dense_score),
         (settings.retrieval_lexical_weight, lexical_component),
         (settings.retrieval_phrase_weight, phrase_component),
+        (settings.retrieval_section_weight, section_score),
         (settings.retrieval_rrf_weight, rrf_score),
         (settings.retrieval_document_weight, document_score),
         (settings.retrieval_subject_weight, subject_score),
+        (settings.retrieval_quality_weight, quality_score),
     ]
     if rerank_score is not None:
         components.append((settings.retrieval_rerank_weight, rerank_score))
@@ -1448,7 +1876,211 @@ def _final_score(
     if is_toc:
         score = min(score * settings.retrieval_toc_penalty, 0.45)
 
+    if low_text_quality:
+        score *= settings.retrieval_low_quality_penalty
+
     return _clamp_score(score)
+
+
+def _apply_intent_scoring(
+    score: float,
+    *,
+    query_type: str,
+    chunk_type: str,
+    schema_has_query_phrase: bool,
+    has_required_terms: bool = False,
+    required_term_score: float = 0.0,
+    missing_required_terms: list[str] | None = None,
+    full_phrase_match: bool = False,
+    section_title_startswith_required_term: bool = False,
+    quality_score: float = 1.0,
+    is_too_short: bool = False,
+    low_text_quality: bool = False,
+    boundary_penalty_value: float = 0.0,
+) -> tuple[float, bool, bool, bool, bool, bool, bool, bool, bool, bool, str, dict[str, float]]:
+    normalized_query_type = query_type or "unknown"
+    normalized_chunk_type = chunk_type or "unknown"
+    intent_boost = False
+    exercise_penalty = False
+    test_question_penalty = False
+    schema_boost = False
+    term_penalty = False
+    full_term_boost = False
+    concept_boost = False
+    exercise_demoted_for_concept = False
+    schema_or_rule_boost = False
+    reasons: list[str] = []
+    score_before_boosts = _clamp_score(score)
+    concept_full_phrase_boost_value = 0.0
+    section_title_boost_value = 0.0
+    schema_or_rule_boost_value = 0.0
+    quality_penalty_value = 0.0
+    exercise_penalty_value = 0.0
+
+    reference_chunk_types = {"schema_or_plan", "definition", "rule", "explanatory"}
+    required_term_ok = (not has_required_terms) or required_term_score >= 0.8
+
+    if normalized_query_type == "concept_lookup":
+        boost_scale = max(0.0, 1.0 - score_before_boosts) * 1.2
+        if full_phrase_match:
+            concept_full_phrase_boost_value = settings.retrieval_concept_full_phrase_boost_value * boost_scale
+            reasons.append("concept_full_phrase_boost")
+        if full_phrase_match and section_title_startswith_required_term:
+            section_title_boost_value = settings.retrieval_concept_section_title_boost_value * boost_scale
+            reasons.append("section_title_prefix_boost")
+        if full_phrase_match and normalized_chunk_type in reference_chunk_types:
+            schema_or_rule_boost_value = settings.retrieval_concept_schema_rule_boost_value * boost_scale
+            intent_boost = True
+            concept_boost = True
+            full_term_boost = True
+            schema_or_rule_boost = True
+            reasons.append("concept_full_phrase_reference_boost")
+            if normalized_chunk_type == "schema_or_plan":
+                schema_boost = True
+        elif required_term_score < 0.8 and has_required_terms:
+            term_penalty = True
+            reasons.append(f"missing_required_terms:{','.join(missing_required_terms or [])}" if missing_required_terms else "missing_required_terms")
+
+        if term_penalty:
+            quality_penalty_value += settings.retrieval_concept_missing_term_penalty_value
+        if normalized_chunk_type == "exercise":
+            exercise_penalty_value = settings.retrieval_concept_exercise_penalty
+            exercise_penalty = True
+            exercise_demoted_for_concept = True
+            reasons.append("exercise_demoted_for_concept_lookup")
+        elif normalized_chunk_type == "test_question":
+            exercise_penalty_value = settings.retrieval_concept_test_question_penalty
+            test_question_penalty = True
+            exercise_demoted_for_concept = True
+            reasons.append("test_question_demoted_for_concept_lookup")
+
+        if quality_score < 1.0:
+            quality_penalty_value += max(0.0, 1.0 - _clamp_score(quality_score)) * 0.07
+        if is_too_short:
+            quality_penalty_value += 0.03
+        if low_text_quality:
+            quality_penalty_value += 0.02
+        quality_penalty_value = min(settings.retrieval_concept_quality_penalty_max, quality_penalty_value)
+
+        score_after_boosts_before_clamp = (
+            score_before_boosts
+            + concept_full_phrase_boost_value
+            + section_title_boost_value
+            + schema_or_rule_boost_value
+            - quality_penalty_value
+            - boundary_penalty_value
+            - exercise_penalty_value
+        )
+        final_score = max(0.0, min(0.99, score_after_boosts_before_clamp))
+        if full_phrase_match and normalized_chunk_type in reference_chunk_types:
+            concept_boost = True
+            schema_or_rule_boost = True
+            intent_boost = True
+        score_debug = {
+            "score_before_boosts": score_before_boosts,
+            "concept_full_phrase_boost_value": concept_full_phrase_boost_value,
+            "section_title_boost_value": section_title_boost_value,
+            "schema_or_rule_boost_value": schema_or_rule_boost_value,
+            "quality_penalty_value": quality_penalty_value,
+            "boundary_penalty_value": boundary_penalty_value,
+            "exercise_penalty_value": exercise_penalty_value,
+            "score_after_boosts_before_clamp": score_after_boosts_before_clamp,
+        }
+        return (
+            _clamp_score(final_score),
+            intent_boost,
+            exercise_penalty,
+            test_question_penalty,
+            schema_boost,
+            term_penalty,
+            full_term_boost,
+            concept_boost,
+            exercise_demoted_for_concept,
+            schema_or_rule_boost,
+            ";".join(reasons) if reasons else "base_score",
+            score_debug,
+        )
+
+    required_reference_boosted = False
+    if normalized_query_type == "concept_lookup" and has_required_terms:
+        if full_phrase_match and normalized_chunk_type in reference_chunk_types:
+            score *= settings.retrieval_intent_schema_boost
+            intent_boost = True
+            concept_boost = True
+            full_term_boost = True
+            schema_or_rule_boost = True
+            required_reference_boosted = True
+            reasons.append("concept_full_phrase_reference_boost")
+            if normalized_chunk_type == "schema_or_plan":
+                schema_boost = True
+        elif required_term_score < 0.8:
+            score *= 0.45
+            term_penalty = True
+            missing_label = ",".join(missing_required_terms or [])
+            reasons.append(f"missing_required_terms:{missing_label}" if missing_label else "missing_required_terms")
+
+    if normalized_query_type in {"concept_lookup", "rule_lookup", "explanation", "definition"}:
+        if normalized_chunk_type == "schema_or_plan":
+            if not required_reference_boosted and required_term_ok and schema_has_query_phrase:
+                score *= settings.retrieval_intent_schema_boost
+                intent_boost = True
+                schema_boost = True
+                if normalized_query_type == "concept_lookup":
+                    concept_boost = True
+                    schema_or_rule_boost = True
+                    reasons.append("concept_schema_boost")
+        elif normalized_chunk_type in {"definition", "rule", "explanatory"}:
+            if not required_reference_boosted and required_term_ok:
+                score *= settings.retrieval_intent_reference_boost
+                intent_boost = True
+                if normalized_query_type == "concept_lookup":
+                    concept_boost = True
+                    schema_or_rule_boost = True
+                    reasons.append("concept_reference_boost")
+        elif normalized_chunk_type == "exercise":
+            if normalized_query_type == "concept_lookup":
+                score *= settings.retrieval_concept_exercise_penalty
+                exercise_demoted_for_concept = True
+                reasons.append("exercise_demoted_for_concept_lookup")
+            else:
+                score *= settings.retrieval_exercise_penalty
+            exercise_penalty = True
+        elif normalized_chunk_type == "test_question":
+            if normalized_query_type == "concept_lookup":
+                score *= settings.retrieval_concept_test_question_penalty
+                exercise_demoted_for_concept = True
+                reasons.append("test_question_demoted_for_concept_lookup")
+            else:
+                score *= settings.retrieval_test_question_penalty
+            test_question_penalty = True
+    elif normalized_query_type in {"exercise_lookup", "problem_solving"} and normalized_chunk_type in {"exercise", "test_question"}:
+        score *= settings.retrieval_exercise_query_boost
+        intent_boost = True
+        reasons.append("exercise_lookup_boost")
+
+    return (
+        _clamp_score(score),
+        intent_boost,
+        exercise_penalty,
+        test_question_penalty,
+        schema_boost,
+        term_penalty,
+        full_term_boost,
+        concept_boost,
+        exercise_demoted_for_concept,
+        schema_or_rule_boost,
+        ";".join(reasons) if reasons else "base_score",
+        {
+            "score_before_boosts": score_before_boosts,
+            "concept_full_phrase_boost_value": 0.0,
+            "section_title_boost_value": 0.0,
+            "schema_or_rule_boost_value": 0.0,
+            "quality_penalty_value": 0.0,
+            "boundary_penalty_value": 0.0,
+            "exercise_penalty_value": 0.0,
+            "score_after_boosts_before_clamp": score,
+        },
+    )
 
 
 def score_retrieval_candidates(
@@ -1464,6 +2096,7 @@ def score_retrieval_candidates(
     query_phrases = _query_phrases_for_scoring(query)
     anchor_phrases = _anchor_phrases_for_query(query)
     required_exact_phrases = _required_exact_phrases_for_query(query)
+    required_terms = _required_terms_for_scoring(query, query_analysis)
     topic_units = _topic_units_for_query(query)
     lexical_scores = _bm25_scores(query_terms, candidates) if query_terms else {}
     rerank_scores = _normalize_rerank_scores(rerank_raw_scores, len(candidates))
@@ -1471,20 +2104,45 @@ def score_retrieval_candidates(
     rejected: list[dict[str, Any]] = []
 
     for idx, row in enumerate(candidates):
+        meta = _metadata_with_inferred_section(row)
+        row_for_scoring = replace(row, meta=meta)
         dense_score = _clamp_score(row.dense_score or row.score)
         lexical_score = _clamp_score(max(row.lexical_score, lexical_scores.get(row.fragment_id, 0.0)))
-        lexical_text = f"{row.title or ''} {row.source_uri or ''} {row.text or ''}"
+        search_text = str(meta.get("search_text") or "")
+        section_context = " ".join(
+            str(value)
+            for value in (
+                meta.get("section_title"),
+                meta.get("inferred_section_title"),
+                " ".join(str(item) for item in meta.get("section_path") or [] if item),
+            )
+            if value
+        )
+        lexical_text = f"{row.title or ''} {row.source_uri or ''} {section_context} {search_text} {row.text or ''}"
         overlap = lexical_overlap(query_terms, lexical_text)
         raw_phrase_score = phrase_match_score(query, lexical_text)
         anchor_score = anchor_phrase_score(query, lexical_text)
         topic_score = topical_match_score(query, lexical_text)
         weighted_match_score = weighted_phrase_term_score(query, lexical_text)
-        section_score = section_match_score(query, query_terms, row.meta)
+        section_score = section_match_score(query, query_terms, meta)
+        required_term_text = _candidate_required_term_text(row, meta)
+        required_term_match = required_term_match_score(required_terms, required_term_text)
+        term_signals = required_term_signals(required_terms, required_term_text, required_term_match)
         phrase_score_before_penalty = _clamp_score(max(raw_phrase_score, weighted_match_score, section_score * 0.85))
         phrase_match = _phrase_modifier_match(required_exact_phrases, lexical_text, phrase_score_before_penalty)
         phrase_score = phrase_match.phrase_score_after_penalty
-        subject_score = _clamp_score(row.subject_score)
-        is_toc = _is_toc_fragment(row)
+        subject_score = _candidate_subject_score(query_analysis, row_for_scoring)
+        quality = _candidate_quality(row_for_scoring)
+        chunk_type = str(quality.get("chunk_type") or meta.get("chunk_type") or "unknown")
+        is_navigation_index = bool(quality.get("is_navigation_index") or chunk_type == "navigation_index")
+        if chunk_type in {"exercise", "test_question"} and quality.get("low_text_quality_reason") == "toc":
+            quality["is_toc"] = False
+            quality["low_text_quality"] = False
+            quality["low_text_quality_reason"] = None
+            quality["quality_score"] = max(float(quality.get("quality_score") or 0.0), 0.75)
+        is_toc = bool(quality.get("is_toc") or _is_toc_fragment(row_for_scoring))
+        if chunk_type in {"exercise", "test_question"}:
+            is_toc = False
         document_score = _effective_document_score(
             row.document_score,
             lexical_overlap_score=overlap,
@@ -1501,6 +2159,7 @@ def score_retrieval_candidates(
             lexical_score=lexical_score,
             lexical_overlap_score=overlap,
             phrase_score=phrase_score,
+            section_score=section_score,
             anchor_score=anchor_score,
             topic_score=topic_score,
             subject_score=subject_score,
@@ -1510,9 +2169,40 @@ def score_retrieval_candidates(
             required_exact_phrase_missing=bool(phrase_match.missing_required_modifiers),
             wrong_entity_modifier=phrase_match.wrong_entity_modifier,
             is_toc=is_toc,
+            low_text_quality=bool(quality.get("low_text_quality")),
+            quality_score=float(quality.get("quality_score") or 1.0),
             rerank_score=rerank_score,
             rrf_score=_clamp_score(row.rrf_score),
             document_score=document_score,
+        )
+        schema_has_query_phrase = chunk_type == "schema_or_plan" and (raw_phrase_score > 0 or section_score >= 0.8)
+        (
+            final_score,
+            intent_boost_applied,
+            exercise_penalty_applied,
+            test_question_penalty_applied,
+            schema_boost_applied,
+            term_penalty_applied,
+            full_term_boost_applied,
+            concept_boost_applied,
+            exercise_demoted_for_concept_lookup,
+            schema_or_rule_boost_applied,
+            final_rank_reason,
+            score_adjustments,
+        ) = _apply_intent_scoring(
+            final_score,
+            query_type=str(query_analysis.get("query_type") or "unknown"),
+            chunk_type=chunk_type,
+            schema_has_query_phrase=schema_has_query_phrase or (chunk_type == "schema_or_plan" and required_term_match.score >= 0.8),
+            has_required_terms=bool(required_terms),
+            required_term_score=required_term_match.score,
+            missing_required_terms=term_signals.missing_required_terms,
+            full_phrase_match=term_signals.full_phrase_match,
+            section_title_startswith_required_term=section_title_startswith_required_term(required_terms, meta),
+            quality_score=float(quality.get("quality_score") or 1.0),
+            is_too_short=bool(quality.get("is_too_short")),
+            low_text_quality=bool(quality.get("low_text_quality")),
+            boundary_penalty_value=concept_boundary_penalty(required_terms, row.text or row.snippet or "", chunk_type=chunk_type),
         )
         reason = _noise_rejection_reason(
             query_terms=query_terms,
@@ -1536,6 +2226,7 @@ def score_retrieval_candidates(
         )
         updated = replace(
             row,
+            meta=meta,
             score=final_score,
             dense_score=dense_score,
             lexical_score=lexical_score,
@@ -1555,6 +2246,55 @@ def score_retrieval_candidates(
             phrase_score_after_penalty=phrase_match.phrase_score_after_penalty,
             is_toc=is_toc,
             toc_penalty_applied=is_toc,
+            quality_score=float(quality.get("quality_score") or 1.0),
+            is_index=bool(quality.get("is_index")),
+            is_bibliography=bool(quality.get("is_bibliography")),
+            is_caption=bool(quality.get("is_caption")),
+            is_fragmented=bool(quality.get("is_fragmented")),
+            is_too_short=bool(quality.get("is_too_short")),
+            starts_mid_word=bool(quality.get("starts_mid_word")),
+            low_text_quality=bool(quality.get("low_text_quality")),
+            low_text_quality_reason=quality.get("low_text_quality_reason"),
+            query_type=str(query_analysis.get("query_type") or "unknown"),
+            chunk_type=chunk_type,
+            chunk_type_reason=quality.get("chunk_type_reason") or meta.get("chunk_type_reason"),
+            section_title_reason=meta.get("section_title_reason"),
+            inferred_section_title=meta.get("inferred_section_title"),
+            required_terms=required_term_match.required_terms,
+            required_term_score=required_term_match.score,
+            required_term_match_type=required_term_match.match_type,
+            full_phrase_match=term_signals.full_phrase_match,
+            missing_required_terms=term_signals.missing_required_terms,
+            is_navigation_index=is_navigation_index,
+            intent_boost_applied=intent_boost_applied,
+            exercise_penalty_applied=exercise_penalty_applied,
+            test_question_penalty_applied=test_question_penalty_applied,
+            schema_boost_applied=schema_boost_applied,
+            term_penalty_applied=term_penalty_applied,
+            full_term_boost_applied=full_term_boost_applied,
+            concept_boost_applied=concept_boost_applied,
+            exercise_demoted_for_concept_lookup=exercise_demoted_for_concept_lookup,
+            schema_or_rule_boost_applied=schema_or_rule_boost_applied,
+            final_rank_reason=final_rank_reason,
+            score_before_boosts=float(score_adjustments["score_before_boosts"]),
+            concept_full_phrase_boost_value=float(score_adjustments["concept_full_phrase_boost_value"]),
+            section_title_boost_value=float(score_adjustments["section_title_boost_value"]),
+            schema_or_rule_boost_value=float(score_adjustments["schema_or_rule_boost_value"]),
+            quality_penalty_value=float(score_adjustments["quality_penalty_value"]),
+            boundary_penalty_value=float(score_adjustments["boundary_penalty_value"]),
+            exercise_penalty_value=float(score_adjustments["exercise_penalty_value"]),
+            score_after_boosts_before_clamp=float(score_adjustments["score_after_boosts_before_clamp"]),
+            penalties_applied=_penalties_applied(
+                is_toc=is_toc,
+                low_text_quality=bool(quality.get("low_text_quality")),
+                wrong_entity_modifier=phrase_match.wrong_entity_modifier,
+                subject_confidence=float(query_analysis.get("subject_confidence") or 0.0),
+                subject_score=subject_score,
+                required_exact_phrase_missing=bool(phrase_match.missing_required_modifiers),
+                exercise_penalty_applied=exercise_penalty_applied,
+                test_question_penalty_applied=test_question_penalty_applied,
+                term_penalty_applied=term_penalty_applied,
+            ),
         )
         if apply_noise_filter and reason:
             rejected.append(_debug_hit(updated))
@@ -1727,6 +2467,25 @@ def _text_similarity(left: str, right: str) -> float:
     return len(left_terms & right_terms) / len(left_terms | right_terms)
 
 
+def _same_context_scope(hit: RetrievalRow, rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    hit_meta = hit.meta or {}
+    hit_section = hit_meta.get("section_path") or hit_meta.get("heading_path") or []
+    if isinstance(hit_section, list) and hit_section:
+        scoped = [
+            row
+            for row in rows
+            if isinstance(row.get("meta"), dict)
+            and ((row["meta"].get("section_path") or row["meta"].get("heading_path") or []) == hit_section)
+        ]
+        if len(scoped) >= 2:
+            return scoped
+    if hit.page is not None:
+        scoped = [row for row in rows if row.get("page") == hit.page]
+        if len(scoped) >= 2:
+            return scoped
+    return []
+
+
 def normalize_context(text_value: str, max_chars: int) -> str:
     normalized = re.sub(r"\s+", " ", (text_value or "")).strip()
     if len(normalized) <= max_chars:
@@ -1739,6 +2498,9 @@ def _debug_hit(hit: RetrievalRow) -> dict[str, Any]:
         "fragment_id": hit.fragment_id,
         "source_uri": hit.source_uri,
         "page": hit.page,
+        "section_title": (hit.meta or {}).get("section_title"),
+        "inferred_section_title": hit.inferred_section_title or (hit.meta or {}).get("inferred_section_title"),
+        "section_path": (hit.meta or {}).get("section_path") or (hit.meta or {}).get("heading_path") or [],
         "dense_score": round(hit.dense_score, 4),
         "lexical_score": round(hit.lexical_score, 4),
         "phrase_score": round(hit.phrase_score, 4),
@@ -1759,6 +2521,47 @@ def _debug_hit(hit: RetrievalRow) -> dict[str, Any]:
         "is_toc": hit.is_toc,
         "toc_filtered": hit.toc_filtered,
         "toc_penalty_applied": hit.toc_penalty_applied,
+        "quality_score": round(hit.quality_score, 4),
+        "is_index": hit.is_index,
+        "is_bibliography": hit.is_bibliography,
+        "is_caption": hit.is_caption,
+        "is_fragmented": hit.is_fragmented,
+        "is_too_short": hit.is_too_short,
+        "starts_mid_word": hit.starts_mid_word,
+        "low_text_quality": hit.low_text_quality,
+        "low_quality_filtered": hit.low_quality_filtered,
+        "low_text_quality_reason": hit.low_text_quality_reason,
+        "query_type": hit.query_type,
+        "chunk_type": hit.chunk_type,
+        "chunk_type_reason": hit.chunk_type_reason,
+        "section_title_reason": hit.section_title_reason,
+        "required_terms": hit.required_terms,
+        "required_term_score": round(hit.required_term_score, 4),
+        "required_term_match_type": hit.required_term_match_type,
+        "full_phrase_match": hit.full_phrase_match,
+        "missing_required_terms": hit.missing_required_terms,
+        "is_navigation_index": hit.is_navigation_index,
+        "navigation_filtered": hit.navigation_filtered,
+        "intent_boost_applied": hit.intent_boost_applied,
+        "exercise_penalty_applied": hit.exercise_penalty_applied,
+        "test_question_penalty_applied": hit.test_question_penalty_applied,
+        "schema_boost_applied": hit.schema_boost_applied,
+        "term_penalty_applied": hit.term_penalty_applied,
+        "full_term_boost_applied": hit.full_term_boost_applied,
+        "concept_boost_applied": hit.concept_boost_applied,
+        "exercise_demoted_for_concept_lookup": hit.exercise_demoted_for_concept_lookup,
+        "schema_or_rule_boost_applied": hit.schema_or_rule_boost_applied,
+        "final_rank_reason": hit.final_rank_reason,
+        "score_before_boosts": round(hit.score_before_boosts, 4),
+        "concept_full_phrase_boost_value": round(hit.concept_full_phrase_boost_value, 4),
+        "section_title_boost_value": round(hit.section_title_boost_value, 4),
+        "schema_or_rule_boost_value": round(hit.schema_or_rule_boost_value, 4),
+        "quality_penalty_value": round(hit.quality_penalty_value, 4),
+        "boundary_penalty_value": round(hit.boundary_penalty_value, 4),
+        "exercise_penalty_value": round(hit.exercise_penalty_value, 4),
+        "score_after_boosts_before_clamp": round(hit.score_after_boosts_before_clamp, 4),
+        "expanded_from_neighbors": hit.expanded_from_neighbors,
+        "penalties_applied": hit.penalties_applied,
         "rejection_reason": hit.rejection_reason,
     }
 
@@ -1864,7 +2667,15 @@ def retrieve_multi_query(
     return merged
 
 
-def select_final_hits(hits: list[RetrievalRow], *, top_k: int, min_score: float, include_toc: bool = False) -> list[RetrievalRow]:
+def select_final_hits(
+    hits: list[RetrievalRow],
+    *,
+    top_k: int,
+    min_score: float,
+    include_toc: bool = False,
+    include_low_quality: bool = False,
+    include_navigation: bool = False,
+) -> list[RetrievalRow]:
     normalized_hits = [
         hit if hit.final_score else replace(hit, final_score=hit.score, score=hit.score)
         for hit in hits
@@ -1872,7 +2683,10 @@ def select_final_hits(hits: list[RetrievalRow], *, top_k: int, min_score: float,
     eligible = [
         hit
         for hit in normalized_hits
-        if hit.final_score >= _clamp_score(min_score) and (include_toc or not hit.is_toc)
+        if hit.final_score >= _clamp_score(min_score)
+        and (include_toc or not hit.is_toc)
+        and (include_low_quality or not hit.low_text_quality)
+        and (include_navigation or not hit.is_navigation_index)
     ]
     return mmr_select(apply_adaptive_threshold(eligible), top_k=top_k, query_terms=[])
 

@@ -24,6 +24,8 @@ class RetrieveRequest(BaseModel):
     return_text: bool = False
     debug: bool = False
     include_toc: bool = False
+    include_low_quality: bool = False
+    include_navigation: bool = False
 
 
 class Hit(BaseModel):
@@ -32,6 +34,8 @@ class Hit(BaseModel):
     title: str | None = None
     type: str
     page: int | None = None
+    section_title: str | None = None
+    section_path: list[str] = Field(default_factory=list)
     snippet: str
     score: float
     text: str | None = None
@@ -54,6 +58,48 @@ class Hit(BaseModel):
     is_toc: bool = False
     toc_filtered: bool = False
     toc_penalty_applied: bool = False
+    quality_score: float = 1.0
+    is_index: bool = False
+    is_bibliography: bool = False
+    is_caption: bool = False
+    is_fragmented: bool = False
+    is_too_short: bool = False
+    starts_mid_word: bool = False
+    low_text_quality: bool = False
+    low_quality_filtered: bool = False
+    low_text_quality_reason: str | None = None
+    query_type: str = "unknown"
+    chunk_type: str = "unknown"
+    chunk_type_reason: str | None = None
+    section_title_reason: str | None = None
+    inferred_section_title: str | None = None
+    required_terms: list[str] = Field(default_factory=list)
+    required_term_score: float = 0.0
+    required_term_match_type: str = "none"
+    full_phrase_match: bool = False
+    missing_required_terms: list[str] = Field(default_factory=list)
+    is_navigation_index: bool = False
+    navigation_filtered: bool = False
+    intent_boost_applied: bool = False
+    exercise_penalty_applied: bool = False
+    test_question_penalty_applied: bool = False
+    schema_boost_applied: bool = False
+    term_penalty_applied: bool = False
+    full_term_boost_applied: bool = False
+    concept_boost_applied: bool = False
+    exercise_demoted_for_concept_lookup: bool = False
+    schema_or_rule_boost_applied: bool = False
+    final_rank_reason: str | None = None
+    score_before_boosts: float = 0.0
+    concept_full_phrase_boost_value: float = 0.0
+    section_title_boost_value: float = 0.0
+    schema_or_rule_boost_value: float = 0.0
+    quality_penalty_value: float = 0.0
+    boundary_penalty_value: float = 0.0
+    exercise_penalty_value: float = 0.0
+    score_after_boosts_before_clamp: float = 0.0
+    expanded_from_neighbors: bool = False
+    penalties_applied: list[str] = Field(default_factory=list)
 
 
 class RetrieveResponse(BaseModel):

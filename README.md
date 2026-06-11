@@ -49,7 +49,8 @@ Create `.env`:
 ```env
 DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/rag
 EMBED_DIM=384
-EMBED_MODEL=all-MiniLM-L6-v2
+EMBED_MODEL=storage/models/all-MiniLM-L6-v2
+EMBED_OFFLINE=true
 FAIL_ON_EMBEDDING_FALLBACK=true
 API_KEY=super-secret-key
 ADMIN_API_KEY=super-admin-secret-key
@@ -471,7 +472,9 @@ curl -X POST http://localhost:8000/sources -H "Content-Type: application/json" -
 - GET endpoints (`/healthz`, `/readyz`, `/metrics`) are protected by `X-API-Key`.
 - `POST /ingest` is admin-only and requires `X-Admin-API-Key`.
 - Models are initialized once at startup and reused across requests for better parallel performance.
+- For production/offline deployments, pre-download the embedding model and set `EMBED_MODEL=storage/models/all-MiniLM-L6-v2` plus `EMBED_OFFLINE=true`. See [Local embedding models](docs/local_models.md).
 - Retrieval candidate recall uses pgvector ANN in SQL (`embedding <=> query_vector` + top-N) before hybrid BM25 and rerank to reduce Python CPU/RAM on large datasets.
+- Retrieval debug mode exposes ranking reasons such as `full_phrase_match`, `missing_required_terms`, `concept_boost_applied`, `exercise_demoted_for_concept_lookup`, `schema_or_rule_boost_applied`, and `final_rank_reason`.
 - The parser uses RAG-Anything when available in runtime; if unavailable it degrades to lightweight local parsers for TXT/MD/PDF/DOCX.
 - `page` remains optional in all APIs.
 - In production keep `FAIL_ON_EMBEDDING_FALLBACK=true` to avoid silent hash-embedding fallback and low-quality retrieval.
@@ -494,8 +497,13 @@ curl -X POST http://localhost:8000/sources -H "Content-Type: application/json" -
 - LLM-aided title enhancement is disabled by default (`DISABLE_MINERU_LLM=1`) and falls back to identity title function, so `openai` package is not required for MinerU pipeline execution.
 - MinerU subprocess execution has no default timeout (supports long CPU parsing for large PDFs); success is validated by return code, stderr patterns (`Traceback`, `ModuleNotFoundError`, `ERROR`), and non-empty recursive artifacts; failures may trigger one text-only retry before fallback.
 - Retrieval quality is controlled by `VECTOR_RECALL_TOP_N`, `RERANK_TOP_N`, `HYBRID_VECTOR_WEIGHT`, and `QUERY_EXPANSION_ENABLED`; adjust these for your corpus size/domain.
+- To inspect intent-aware ranking for a concept query:
+  ```bash
+  curl -X POST http://localhost:8000/retrieve -H "Content-Type: application/json" -H "X-API-Key: super-secret-key" -d "{\"query\":\"морфологический разбор\",\"top_k\":10,\"min_score\":0.35,\"debug\":true}"
+  ```
 - MinerU + transformers incompatibility (`cache_position`): if logs show `UnimerMBartForCausalLM.forward() got an unexpected keyword argument 'cache_position'`, pin transformers to MinerU-compatible version and restart service:
   1. `pip install "transformers==4.35.0"`
   2. restart API process (`uvicorn`/systemd).
 - Embeddings dependency mismatch (`split_torch_state_dict_into_shards` / `huggingface_hub` / `accelerate`): run `scripts/repair_env.ps1` (PowerShell) to reinstall a compatible core stack (`huggingface-hub<0.18`, `tokenizers==0.14.1`), then restart API.
+- Embedding model unavailable with SSL/network errors from HuggingFace: download the model once into `storage/models/all-MiniLM-L6-v2`, set `EMBED_MODEL=storage/models/all-MiniLM-L6-v2` and `EMBED_OFFLINE=true`, then restart the API. See [Local embedding models](docs/local_models.md).
 - Recommended compatible ML stack for this service: `transformers==4.35.0`, `huggingface-hub>=0.16.4,<0.18`, `tokenizers==0.14.1`, `sentence-transformers>=2.2`, `safetensors` (accelerate moved to optional `requirements-accelerate.txt`).

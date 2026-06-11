@@ -36,6 +36,13 @@ def test_normalize_elements_accepts_mineru_page_idx():
     assert "page_idx" not in elements[0].meta
 
 
+def test_normalize_elements_preserves_markdown_section_breaks():
+    parser = RAGAnythingParser()
+    elements = parser._normalize_elements([{"type": "text", "text": "# Морфологический разбор\n\nПлан разбора.", "page": 1}])
+
+    assert "# Морфологический разбор\n\nПлан разбора." in elements[0].content
+
+
 def test_logs_warning_when_mineru_throws(tmp_path, monkeypatch, caplog):
     parser = RAGAnythingParser()
     sample = tmp_path / "sample.txt"

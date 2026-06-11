@@ -2,3 +2,4 @@
 .venv-mineru/
 storage/raw/
 storage/parsed/
+.env

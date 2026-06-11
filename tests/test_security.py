@@ -10,7 +10,18 @@ class FakeService:
     def ingest(self, input_path: str, collection: str, reindex: bool):
         return {"indexed_docs": 0, "indexed_fragments": 0, "indexed_vectors": 0}
 
-    def retrieve(self, query: str, top_k: int, min_score: float, collection: str, source_uris, return_text: bool, include_toc: bool = False):
+    def retrieve(
+        self,
+        query: str,
+        top_k: int,
+        min_score: float,
+        collection: str,
+        source_uris,
+        return_text: bool,
+        include_toc: bool = False,
+        include_low_quality: bool = False,
+        include_navigation: bool = False,
+    ):
         return []
 
     def query(self, query: str, top_k: int, min_score: float, collection: str, source_uris):
