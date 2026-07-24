@@ -1,13 +1,16 @@
 import hashlib
+import json
 import logging
 import random
 import re
 import threading
 from dataclasses import dataclass
+from functools import lru_cache
 from importlib import metadata
 from pathlib import Path
 
 from app.config import settings
+from app.runtime import configure_cpu_runtime
 
 
 logger = logging.getLogger("rag_service")
@@ -32,6 +35,7 @@ def _safe_version(pkg: str) -> str | None:
 
 class EmbeddingProvider:
     def __init__(self) -> None:
+        configure_cpu_runtime()
         self.dim = settings.embed_dim
         self._model = None
         self._lock = threading.Lock()
@@ -48,6 +52,7 @@ class EmbeddingProvider:
         try:
             model_ref = _embedding_model_reference(settings.embed_model, embed_offline=settings.embed_offline)
             _validate_embedding_model_reference(model_ref)
+            self.model_fingerprint = _embedding_model_fingerprint(model_ref, self.dim)
 
             from sentence_transformers import SentenceTransformer
 
@@ -55,6 +60,7 @@ class EmbeddingProvider:
         except Exception as exc:
             self._model = None
             self.using_fallback = True
+            self.model_fingerprint = f"fallback-hash-v1-dim-{self.dim}"
             error_text = _extract_error_text(exc)
             model_ref = _safe_embedding_model_reference(settings.embed_model, embed_offline=settings.embed_offline)
             logger.warning(
@@ -100,15 +106,53 @@ class EmbeddingProvider:
             )
 
     def embed(self, text: str) -> list[float]:
+        return list(self._embed_cached(text))
+
+    def embed_many(self, texts: list[str], *, batch_size: int | None = None) -> list[list[float]]:
+        if not texts:
+            return []
+        if self._model is None:
+            return [self._hash_embedding(text) for text in texts]
+
+        effective_batch_size = max(1, int(batch_size or settings.embedding_batch_size))
+        with self._lock:
+            encoded = self._model.encode(
+                texts,
+                batch_size=effective_batch_size,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )
+        raw_vectors = encoded.tolist() if hasattr(encoded, "tolist") else list(encoded)
+        vectors = [[float(value) for value in vector] for vector in raw_vectors]
+        invalid_dimensions = sorted({len(vector) for vector in vectors if len(vector) != self.dim})
+        if len(vectors) != len(texts) or invalid_dimensions:
+            details = (
+                f"model returned {len(vectors)} vectors for {len(texts)} texts"
+                if len(vectors) != len(texts)
+                else f"model returned dimensions {invalid_dimensions}"
+            )
+            raise RuntimeError(
+                f"Embedding batch mismatch: {details}, but EMBED_DIM={self.dim}. "
+                "Recreate the vector schema and reindex."
+            )
+        return vectors
+
+    @lru_cache(maxsize=256)
+    def _embed_cached(self, text: str) -> tuple[float, ...]:
         if self._model is not None:
             with self._lock:
-                values = self._model.encode(text, normalize_embeddings=True).tolist()
+                values = self._model.encode(
+                    text,
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                ).tolist()
             if len(values) != self.dim:
-                if len(values) > self.dim:
-                    return values[: self.dim]
-                return values + [0.0] * (self.dim - len(values))
-            return values
-        return self._hash_embedding(text)
+                raise RuntimeError(
+                    f"Embedding dimension mismatch: model returned {len(values)}, "
+                    f"but EMBED_DIM={self.dim}. Recreate the vector schema and reindex."
+                )
+            return tuple(float(value) for value in values)
+        return tuple(self._hash_embedding(text))
 
     def _hash_embedding(self, text: str) -> list[float]:
         seed = int(hashlib.sha256(text.encode("utf-8")).hexdigest(), 16) % (2**32)
@@ -168,6 +212,47 @@ def _safe_embedding_model_reference(model_name_or_path: str, *, embed_offline: b
             local_path=None,
             local_files_only=bool(embed_offline),
         )
+
+
+def _embedding_model_fingerprint(model_ref: EmbeddingModelReference, dim: int) -> str:
+    digest = hashlib.sha256()
+    digest.update(f"dim={dim}\n".encode())
+    if model_ref.local_path is None:
+        digest.update(f"model={model_ref.configured.strip().lower()}".encode())
+        return f"sha256:{digest.hexdigest()}"
+
+    root = model_ref.local_path
+    identity = root.name
+    config_path = root / "config.json"
+    if config_path.is_file():
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            identity = str(config.get("_name_or_path") or identity)
+        except (OSError, ValueError, TypeError):
+            pass
+    digest.update(f"model={identity.strip().lower()}\n".encode())
+
+    for name in ("modules.json", "config.json", "sentence_bert_config.json"):
+        path = root / name
+        if path.is_file():
+            digest.update(name.encode())
+            digest.update(path.read_bytes())
+
+    weight_files = sorted(
+        path
+        for pattern in ("*.safetensors", "pytorch_model*.bin")
+        for path in root.glob(pattern)
+        if path.is_file()
+    )
+    for path in weight_files:
+        size = path.stat().st_size
+        digest.update(f"{path.name}:{size}".encode())
+        with path.open("rb") as handle:
+            digest.update(handle.read(1024 * 1024))
+            if size > 1024 * 1024:
+                handle.seek(max(0, size - 1024 * 1024))
+                digest.update(handle.read(1024 * 1024))
+    return f"sha256:{digest.hexdigest()}"
 
 
 def _looks_like_local_model_path(value: str) -> bool:

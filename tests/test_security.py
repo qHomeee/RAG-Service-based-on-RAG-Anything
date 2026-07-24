@@ -1,9 +1,10 @@
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.config import settings
-from app.main import app, get_service
+from app.main import _validate_secure_settings, app, get_service
 
 
 class FakeService:
@@ -24,7 +25,15 @@ class FakeService:
     ):
         return []
 
-    def query(self, query: str, top_k: int, min_score: float, collection: str, source_uris):
+    def query(
+        self,
+        query: str,
+        top_k: int,
+        min_score: float,
+        collection: str,
+        source_uris,
+        return_sources: bool = True,
+    ):
         return {"answer": "ok", "sources": []}
 
     def list_sources(self, collection: str):
@@ -60,7 +69,7 @@ def test_ingest_path_must_exist(tmp_path: Path):
         missing = tmp_path / "missing"
         response = client.post(
             "/ingest",
-            headers={"X-Admin-API-Key": "change-me-admin"},
+            headers={"X-Admin-API-Key": settings.admin_api_key},
             json={"input_path": str(missing), "collection": "default", "reindex": False},
         )
         assert response.status_code == 400
@@ -77,16 +86,56 @@ def test_rate_limit_exceeded(monkeypatch):
     try:
         response1 = client.post(
             "/sources",
-            headers={"X-API-Key": "change-me"},
+            headers={"X-API-Key": settings.api_key},
             json={"collection": "default"},
         )
         assert response1.status_code == 200
 
         response2 = client.post(
             "/sources",
-            headers={"X-API-Key": "change-me"},
+            headers={"X-API-Key": settings.api_key},
             json={"collection": "default"},
         )
         assert response2.status_code == 429
     finally:
         app.dependency_overrides.clear()
+
+
+def test_production_requires_embedding_compatibility_guard(monkeypatch):
+    monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "api_key", "a" * 32)
+    monkeypatch.setattr(settings, "admin_api_key", "b" * 32)
+    monkeypatch.setattr(settings, "uvicorn_workers", 1)
+    monkeypatch.setattr(settings, "embed_offline", True)
+    monkeypatch.setattr(settings, "reranker_offline", True)
+    monkeypatch.setattr(settings, "fail_on_embedding_fallback", True)
+    monkeypatch.setattr(settings, "enforce_embedding_model_compatibility", False)
+    monkeypatch.setattr(settings, "auto_create_schema", False)
+
+    with pytest.raises(RuntimeError, match="ENFORCE_EMBEDDING_MODEL_COMPATIBILITY"):
+        _validate_secure_settings()
+
+
+def test_production_rejects_example_placeholder_secret(monkeypatch):
+    monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "api_key", "replace-with-at-least-32-random-characters")
+
+    with pytest.raises(RuntimeError, match="API_KEY"):
+        _validate_secure_settings()
+
+
+def test_production_rejects_wildcard_allowed_hosts(monkeypatch):
+    monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "api_key", "a" * 32)
+    monkeypatch.setattr(settings, "admin_api_key", "b" * 32)
+    monkeypatch.setattr(settings, "database_url", "postgresql+psycopg://rag:secret@postgres/rag")
+    monkeypatch.setattr(settings, "uvicorn_workers", 1)
+    monkeypatch.setattr(settings, "embed_offline", True)
+    monkeypatch.setattr(settings, "reranker_offline", True)
+    monkeypatch.setattr(settings, "fail_on_embedding_fallback", True)
+    monkeypatch.setattr(settings, "enforce_embedding_model_compatibility", True)
+    monkeypatch.setattr(settings, "auto_create_schema", False)
+    monkeypatch.setattr(settings, "allowed_hosts", ["*"])
+
+    with pytest.raises(RuntimeError, match="ALLOWED_HOSTS"):
+        _validate_secure_settings()

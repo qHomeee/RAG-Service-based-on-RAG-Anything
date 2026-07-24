@@ -22,10 +22,17 @@ DEFAULT_SUBJECT_HINTS: dict[str, list[str]] = {
         "политика",
         "государство",
         "конгресс",
+        "тайные общества",
+        "первые тайные общества",
         "крепостное право",
     ],
     "russian_language": [
         "русский язык",
+        "фонетика",
+        "лексикология",
+        "фразеология",
+        "морфемика",
+        "словообразование",
         "морфологический разбор",
         "синтаксический разбор",
         "разбор предложения",
@@ -38,8 +45,16 @@ DEFAULT_SUBJECT_HINTS: dict[str, list[str]] = {
         "имя существительное",
         "глагол",
         "придаточное предложение",
+        "придаточное",
+        "сложное предложение",
+        "сложносочинённое предложение",
+        "сложноподчинённое предложение",
+        "бессоюзное предложение",
+        "знаки препинания",
+        "авторские знаки",
         "синтаксис",
         "морфология",
+        "роль языка",
         "н и нн",
         "нн",
     ],
@@ -82,12 +97,26 @@ DEFAULT_SUBJECT_HINTS: dict[str, list[str]] = {
         "дробь",
         "теорема",
         "дискриминант",
+        "треугольник",
+        "площадь",
         "решить",
         "корень",
     ],
     "literature": ["литература", "роман", "повесть", "стихотворение", "поэма", "герой", "сюжет", "жанр"],
     "geography": ["география", "климат", "материк", "океан", "рельеф", "карта", "страна", "население"],
-    "physics": ["физика", "сила", "масса", "скорость", "энергия", "электричество", "закон ньютона"],
+    "physics": [
+        "физика",
+        "сила",
+        "масса",
+        "скорость",
+        "энергия",
+        "электричество",
+        "закон ньютона",
+        "закон ома",
+        "электрический ток",
+        "напряжение",
+        "электрическая цепь",
+    ],
     "chemistry": ["химия", "вещество", "реакция", "молекула", "атом", "кислота", "основание", "элемент"],
     "social_studies": ["обществознание", "общество", "право", "экономика", "гражданин", "социальный", "государство"],
 }
@@ -130,11 +159,16 @@ class Settings(BaseSettings):
     db_pool_size: int = 10
     db_max_overflow: int = 20
     db_pool_recycle_seconds: int = 1800
+    db_statement_timeout_ms: int = 30_000
+    db_lock_timeout_ms: int = 5_000
+    db_idle_transaction_timeout_ms: int = 60_000
 
     embed_dim: int = 384
     embed_model: str = "all-MiniLM-L6-v2"
     embed_offline: bool = False
+    embedding_batch_size: int = 32
     fail_on_embedding_fallback: bool = True
+    enforce_embedding_model_compatibility: bool = True
     api_key: str = "change-me"
     admin_api_key: str = "change-me-admin"
     storage_raw: str = "storage/raw"
@@ -142,19 +176,30 @@ class Settings(BaseSettings):
     redis_url: str | None = None
 
     max_file_size_mb: int = 50
+    max_ingest_files: int = 100
+    max_ingest_batch_mb: int = 1000
     max_query_chars: int = 4000
+    max_top_k: int = 20
+    max_source_uris: int = 100
+    max_source_uri_chars: int = 2048
+    max_collection_chars: int = 128
     default_top_k: int = 12
     default_min_score: float = 0.35
     chunk_size: int = 1000
     chunk_overlap: int = 150
     adaptive_chunk_min_chars: int = 800
     adaptive_chunk_max_chars: int = 1200
+    coalesce_parsed_elements_enabled: bool = True
     semantic_chunking_enabled: bool = True
     semantic_table_chunk_max_chars: int = 700
     semantic_faq_chunk_max_chars: int = 900
 
-    vector_recall_top_n: int = 120
-    rerank_top_n: int = 40
+    # CPU-oriented defaults. Increase only after measuring Recall@k.
+    vector_recall_top_n: int = 60
+    vector_subchunk_oversample: int = 3
+    rerank_top_n: int = 12
+    reranker_batch_size: int = 8
+    reranker_max_length: int = 256
     rag_final_top_k: int = 5
     hybrid_vector_weight: float = 0.6
     retrieval_dense_weight: float = 0.25
@@ -195,11 +240,11 @@ class Settings(BaseSettings):
     retrieval_concept_exercise_penalty: float = 0.25
     retrieval_concept_test_question_penalty: float = 0.35
     retrieval_exercise_query_boost: float = 1.35
-    document_routing_min_score: float = 0.18
+    document_routing_min_score: float = 0.12
     document_prefilter_enabled: bool = True
     document_prefilter_top_n: int = 8
     context_expansion_neighbors: int = 1
-    context_expansion_max_chars: int = 2400
+    context_expansion_max_chars: int = 1800
     query_expansion_enabled: bool = True
     query_synonyms_default: dict[str, list[str]] = {
         "инфляция": ["рост цен", "индекс потребительских цен", "обесценивание"],
@@ -221,6 +266,8 @@ class Settings(BaseSettings):
         "russian_language": {
             "правописание": ["орфография", "правило"],
             "причастиях": ["причастие", "нн", "суффикс"],
+            "расставлять знаки": ["пунктуация"],
+            "знаки препинания": ["пунктуация"],
         },
         "safety": {
             "чс": ["чрезвычайная ситуация", "чрезвычайных ситуациях"],
@@ -235,6 +282,10 @@ class Settings(BaseSettings):
     }
 
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    reranker_offline: bool = False
+    reranker_backend: str = "torch"
+    cpu_threads_per_worker: int = 3
+    cpu_interop_threads: int = 1
     parser_fallback_alert_threshold: float = 0.3
 
     mineru_python: str | None = None
@@ -242,7 +293,11 @@ class Settings(BaseSettings):
 
     ingest_path_must_be_under_storage_raw: bool = True
     rate_limit_per_minute: int = 120
+    require_redis_in_production: bool = True
+    allow_retrieval_debug: bool = False
+    auto_create_schema: bool = False
     uvicorn_workers: int = 2
+    allowed_hosts: list[str] = ["localhost", "127.0.0.1", "testserver"]
 
 
 settings = Settings()

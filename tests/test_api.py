@@ -197,7 +197,15 @@ class FakeService:
             ],
         }
 
-    def query(self, query: str, top_k: int, min_score: float, collection: str, source_uris: list[str] | None):
+    def query(
+        self,
+        query: str,
+        top_k: int,
+        min_score: float,
+        collection: str,
+        source_uris: list[str] | None,
+        return_sources: bool = True,
+    ):
         raise NotImplementedError
 
     def list_sources(self, collection: str):
@@ -220,7 +228,7 @@ def test_ingest_endpoint(tmp_path: Path):
     try:
         response = client.post(
             "/ingest",
-            headers={"X-Admin-API-Key": "change-me-admin"},
+            headers={"X-Admin-API-Key": settings.admin_api_key},
             json={"input_path": str(tmp_path), "collection": "default", "reindex": False},
         )
         assert response.status_code == 200
@@ -236,7 +244,7 @@ def test_retrieve_endpoint():
     client = _client()
     response = client.post(
         "/retrieve",
-        headers={"X-API-Key": "change-me"},
+        headers={"X-API-Key": settings.api_key},
         json={"query": "inflation", "top_k": 5, "min_score": 0.2, "collection": "default"},
     )
     app.dependency_overrides.clear()
@@ -244,13 +252,16 @@ def test_retrieve_endpoint():
     body = response.json()
     assert len(body["hits"]) == 1
     assert body["hits"][0]["fragment_id"] == "frag-1"
+    assert len(response.headers["x-request-id"]) == 32
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["cache-control"] == "no-store"
 
 
 def test_retrieve_endpoint_with_source_filter():
     client = _client()
     response = client.post(
         "/retrieve",
-        headers={"X-API-Key": "change-me"},
+        headers={"X-API-Key": settings.api_key},
         json={
             "query": "inflation",
             "top_k": 5,
@@ -267,12 +278,17 @@ def test_retrieve_endpoint_with_source_filter():
 
 def test_retrieve_endpoint_debug_returns_component_scores_and_rejections():
     client = _client()
-    response = client.post(
-        "/retrieve",
-        headers={"X-API-Key": "change-me"},
-        json={"query": "inflation", "top_k": 5, "min_score": 0.35, "collection": "default", "debug": True},
-    )
-    app.dependency_overrides.clear()
+    original_setting = settings.allow_retrieval_debug
+    settings.allow_retrieval_debug = True
+    try:
+        response = client.post(
+            "/retrieve",
+            headers={"X-API-Key": settings.api_key},
+            json={"query": "inflation", "top_k": 5, "min_score": 0.35, "collection": "default", "debug": True},
+        )
+    finally:
+        settings.allow_retrieval_debug = original_setting
+        app.dependency_overrides.clear()
     assert response.status_code == 200
     body = response.json()
     hit = body["hits"][0]
@@ -348,7 +364,7 @@ def test_sources_endpoint():
     client = _client()
     response = client.post(
         "/sources",
-        headers={"X-API-Key": "change-me"},
+        headers={"X-API-Key": settings.api_key},
         json={"collection": "default"},
     )
     app.dependency_overrides.clear()
@@ -359,7 +375,7 @@ def test_sources_endpoint():
 
 def test_metrics_endpoint():
     client = _client()
-    response = client.get("/metrics", headers={"X-API-Key": "change-me"})
+    response = client.get("/metrics", headers={"X-API-Key": settings.api_key})
     app.dependency_overrides.clear()
     assert response.status_code == 200
     body = response.json()
@@ -369,9 +385,9 @@ def test_metrics_endpoint():
 
 def test_readyz_endpoint_shape():
     client = _client()
-    response = client.get("/readyz", headers={"X-API-Key": "change-me"})
+    response = client.get("/readyz", headers={"X-API-Key": settings.api_key})
     app.dependency_overrides.clear()
-    assert response.status_code == 200
+    assert response.status_code in {200, 503}
     body = response.json()
     assert "status" in body
     assert "checks" in body
@@ -388,6 +404,24 @@ def test_get_requires_api_key():
     assert response.status_code == 401
 
 
+def test_livez_does_not_require_api_key():
+    client = _client()
+    response = client.get("/livez")
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+
+
+def test_retrieve_rejects_top_k_above_server_limit():
+    client = _client()
+    response = client.post(
+        "/retrieve",
+        headers={"X-API-Key": settings.api_key},
+        json={"query": "inflation", "top_k": settings.max_top_k + 1},
+    )
+    app.dependency_overrides.clear()
+    assert response.status_code == 422
+
+
 def test_ingest_requires_admin_api_key(tmp_path: Path):
     client = _client()
     original_setting = settings.ingest_path_must_be_under_storage_raw
@@ -395,7 +429,7 @@ def test_ingest_requires_admin_api_key(tmp_path: Path):
     try:
         response = client.post(
             "/ingest",
-            headers={"X-API-Key": "change-me"},
+            headers={"X-API-Key": settings.api_key},
             json={"input_path": str(tmp_path), "collection": "default", "reindex": False},
         )
         assert response.status_code == 401

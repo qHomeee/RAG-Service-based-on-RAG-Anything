@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -109,6 +110,7 @@ def main() -> None:
     parser.add_argument("--include-toc", action="store_true")
     parser.add_argument("--include-low-quality", action="store_true")
     parser.add_argument("--include-navigation", action="store_true")
+    parser.add_argument("--compact", action="store_true", help="Print one compact JSON record per query")
     args = parser.parse_args()
 
     eval_set = _load_eval_set(args.eval_set)
@@ -119,6 +121,7 @@ def main() -> None:
         repository = RagRepository(db=db, embeddings=embeddings, reranker=reranker)
         for spec in eval_set:
             query = spec["query"]
+            started = time.perf_counter()
             result = repository.retrieve_with_debug(
                 query,
                 top_k=args.top_k,
@@ -130,6 +133,29 @@ def main() -> None:
                 include_navigation=args.include_navigation,
                 debug=True,
             )
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+            if args.compact:
+                print(
+                    json.dumps(
+                        {
+                            "query": query,
+                            "elapsed_ms": elapsed_ms,
+                            "hits": [
+                                {
+                                    "fragment_id": hit.fragment_id,
+                                    "source_uri": hit.source_uri,
+                                    "page": hit.page,
+                                    "score": round(hit.score, 4),
+                                    "text": hit.text.replace("\n", " ")[:240],
+                                }
+                                for hit in result.hits
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+                continue
             print(f"\nQUERY: {query}")
             if result.debug:
                 print("QUERY_ANALYSIS:", json.dumps(result.debug.get("query_analysis"), ensure_ascii=False))

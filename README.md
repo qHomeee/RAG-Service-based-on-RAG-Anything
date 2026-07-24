@@ -1,22 +1,29 @@
 # RAG Anything FastAPI Microservice
 
+CPU production profile for a VPS with **8 CPU cores, 16 GB RAM and no GPU** is documented in
+[docs/vps-production.md](docs/vps-production.md). The ready-to-run stack is
+`docker-compose.vps.yml`; it uses two API workers, PostgreSQL/pgvector, Redis, offline local
+embedding/reranker models, bounded memory and CPU, health checks, migrations and log rotation.
+The latest local CPU measurements are in
+[docs/benchmark-2026-07-24.md](docs/benchmark-2026-07-24.md).
+
 Production-oriented RAG microservice for WordPress integrations. The service ingests raw files, parses with **HKUDS/RAG-Anything** adapter, normalizes to stable fragments, stores vectors in PostgreSQL+pgvector, and returns grounded responses with citations on `source_uri + fragment_id`.
 
 ## Features
 - `POST /ingest` for batch indexing from a directory.
 - `POST /retrieve` for fragment-level semantic retrieval.
-- `POST /query` for grounded answer generation with source list.
+- `POST /query` for an extractive grounded response with source list (this endpoint does not call a generative LLM).
 - `POST /sources` for listing available source files in a collection (for WordPress source picker).
 - Stable `fragment_id = sha256(source_uri + element_index + normalized_content_prefix)`.
 - Structure-aware fragmenting (headings/paragraphs) with adaptive 800-1200 char chunks and `heading_path` in fragment metadata.
-- Hybrid retrieval pipeline: vector recall top-N + BM25 signal + cross-encoder reranking to final top-k.
+- Hybrid retrieval pipeline: HNSW vector recall + PostgreSQL full-text search + balanced CPU cross-encoder reranking.
 - Fragment-level indexing with subchunking (`chunk_size=1500`, overlap `180` ≈ 12%).
 - Parser observability logs with parse mode and fallback-ratio alerts.
 - Quality monitoring CLI for Recall@k / nDCG regression checks across reference query sets.
-- X-API-Key authentication, Redis-backed rate limiting (fallback in-memory), JSON-only errors, query size limits, JSON logs.
-- `/healthz` liveness endpoint with DB connectivity check.
-- `/readyz` readiness endpoint with model-load checks and pgvector extension verification.
-- `/metrics` endpoint with SLO metrics (p95/p99 latency, 5xx error rate).
+- A checked-in 50-query CPU acceptance set with source/page/term evidence labels and negative-query gates.
+- X-API-Key authentication, mandatory production Redis rate limiting, bounded requests and JSON logs.
+- Public `/livez`, authenticated `/healthz`, and fail-closed `/readyz` with model/index compatibility checks.
+- `/metrics` for SLO snapshots and `/metrics/prometheus` for Prometheus scraping.
 
 ## Project tree
 
@@ -47,22 +54,29 @@ Production-oriented RAG microservice for WordPress integrations. The service ing
 Create `.env`:
 
 ```env
-DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/rag
+APP_ENV=production
+ALLOWED_HOSTS=["rag.example.com","localhost","127.0.0.1"]
+DATABASE_URL=postgresql+psycopg://rag:strong-password@localhost:5432/rag
+REDIS_URL=redis://localhost:6379/0
 EMBED_DIM=384
-EMBED_MODEL=storage/models/all-MiniLM-L6-v2
+EMBED_MODEL=storage/models/paraphrase-multilingual-MiniLM-L12-v2
 EMBED_OFFLINE=true
 FAIL_ON_EMBEDDING_FALLBACK=true
-API_KEY=super-secret-key
-ADMIN_API_KEY=super-admin-secret-key
+ENFORCE_EMBEDDING_MODEL_COMPATIBILITY=true
+RERANKER_MODEL=storage/models/mmarco-mMiniLMv2-L12-H384-v1
+RERANKER_OFFLINE=true
+API_KEY=at-least-32-random-characters
+ADMIN_API_KEY=another-32-random-characters
 STORAGE_RAW=storage/raw
 STORAGE_PARSED=storage/parsed
-REDIS_URL=
-APP_ENV=production
 INGEST_PATH_MUST_BE_UNDER_STORAGE_RAW=true
-RATE_LIMIT_PER_MINUTE=120
+RATE_LIMIT_PER_MINUTE=60
 UVICORN_WORKERS=2
-VECTOR_RECALL_TOP_N=120
-RERANK_TOP_N=40
+CPU_THREADS_PER_WORKER=3
+VECTOR_RECALL_TOP_N=60
+RERANK_TOP_N=12
+RERANKER_BATCH_SIZE=8
+RERANKER_MAX_LENGTH=256
 HYBRID_VECTOR_WEIGHT=0.6
 QUERY_EXPANSION_ENABLED=true
 QUERY_SYNONYMS_BY_COLLECTION={}
@@ -73,6 +87,7 @@ SEMANTIC_CHUNKING_ENABLED=true
 SEMANTIC_TABLE_CHUNK_MAX_CHARS=700
 SEMANTIC_FAQ_CHUNK_MAX_CHARS=900
 DISABLE_MINERU_LLM=1
+AUTO_CREATE_SCHEMA=false
 ```
 
 ## Run with Docker Postgres
@@ -81,7 +96,7 @@ DISABLE_MINERU_LLM=1
 docker compose up -d
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements-core.txt
+pip install -r requirements-dev.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
 ```
 
@@ -93,7 +108,7 @@ Core service environment:
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements-core.txt
+pip install -r requirements-dev.txt
 ```
 
 MinerU environment (isolated):
@@ -166,6 +181,10 @@ Prepare a JSON evaluation set (usually 50-100 labeled queries):
     "query": "что такое инфляция",
     "relevant_fragment_ids": ["abc123", "def456"],
     "graded_relevance": {"abc123": 2, "def456": 1}
+  },
+  {
+    "query": "вопрос, ответа на который нет в корпусе",
+    "is_negative": true
   }
 ]
 ```
@@ -173,15 +192,35 @@ Prepare a JSON evaluation set (usually 50-100 labeled queries):
 Run evaluation after reindex/model changes:
 
 ```bash
-python scripts/run_quality_eval.py --eval-set eval_set.json --collection default --top-k 10
+python -m scripts.run_quality_eval \
+  --eval-set eval_set.json \
+  --collection default \
+  --top-k 10 \
+  --min-mean-recall 0.85 \
+  --min-mean-ndcg 0.75 \
+  --min-mrr 0.75 \
+  --min-negative-abstention 0.90
 ```
 
-The report includes per-query and mean `Recall@k` / `nDCG@k` for regression monitoring.
+The report includes `Recall@k`, `nDCG@k`, MRR, and the false-positive/abstention rate
+for negative queries. The command exits with code 2 when a quality gate fails.
+
+The repository also contains a source/page/term-labeled CPU acceptance suite:
+
+```bash
+python -m scripts.run_acceptance_eval \
+  --eval-set eval/cpu_vps_acceptance.json \
+  --top-k 3 \
+  --min-evidence-recall 0.90 \
+  --min-evidence-ndcg 0.85 \
+  --min-negative-abstention 0.90 \
+  --max-p95-ms 4000
+```
 
 Hyperparameter tuning (grid search for `HYBRID_VECTOR_WEIGHT`, `VECTOR_RECALL_TOP_N`, `RERANK_TOP_N`):
 
 ```bash
-python scripts/tune_retrieval.py --eval-set eval_set.json --collection default --top-k 10
+python -m scripts.tune_retrieval --eval-set eval_set.json --collection default --top-k 10
 ```
 
 
@@ -190,13 +229,13 @@ python scripts/tune_retrieval.py --eval-set eval_set.json --collection default -
 Locust:
 
 ```bash
-locust -f scripts/loadtest/locustfile.py --host http://localhost:8000
+API_KEY='<YOUR_API_KEY>' locust -f scripts/loadtest/locustfile.py --host http://localhost:8000
 ```
 
 k6:
 
 ```bash
-k6 run scripts/loadtest/k6_retrieve.js
+API_KEY='<YOUR_API_KEY>' VUS=4 DURATION=2m k6 run scripts/loadtest/k6_retrieve.js
 ```
 
 The k6 script includes threshold checks for `p95`, `p99`, and error rate.
@@ -206,8 +245,9 @@ The k6 script includes threshold checks for `p95`, `p99`, and error rate.
 
 Current defaults are tuned for better recall on long/noisy corpora:
 
-- `VECTOR_RECALL_TOP_N=120`
-- `RERANK_TOP_N=40`
+- `VECTOR_RECALL_TOP_N=60`
+- `RERANK_TOP_N=12`
+- `RERANKER_MAX_LENGTH=256`
 - `RAG_FINAL_TOP_K=5`
 - `HYBRID_VECTOR_WEIGHT=0.6`
 - `QUERY_EXPANSION_ENABLED=true`
@@ -218,10 +258,10 @@ How it works:
 
 1. query is normalized (`тема урока:`/`тема:`/`урок:` prefixes are removed);
 2. short topic queries are expanded into 2-3 search variants (base + thematic terms);
-3. vector recall gets top-N candidate fragments for each variant in pgvector space;
-4. BM25 lexical score is computed over candidates and blended with vector similarity;
-5. multi-query results are fused by `fragment_id` with weighted max-score;
-6. candidates are reranked by cross-encoder (if loaded);
+3. HNSW vector recall gets top-N candidate fragments for each variant in pgvector space;
+4. PostgreSQL Russian full-text search supplies a separate lexical recall path;
+5. semantic and lexical candidates are fused while preserving both paths in the bounded rerank pool;
+6. at most 12 candidates, truncated to 256 tokens, are reranked by the CPU cross-encoder;
 7. keyword relevance rerank applies topic marker penalties/bonuses;
 8. final grounded context in `/query` is limited by `RAG_FINAL_TOP_K`.
 
@@ -261,42 +301,63 @@ Use `/readyz` checks `reranker_loaded` and `reranker_error` as monitoring signal
 
 ```bash
 cp .env.docker.example .env.docker
-# edit .env.docker: set API_KEY / ADMIN_API_KEY
+# edit .env.docker: set API_KEY, ADMIN_API_KEY and the same POSTGRES_PASSWORD
+# in both POSTGRES_PASSWORD and DATABASE_URL
 ```
 
-2. Build and start services:
+2. Download the two multilingual CPU models before enabling offline mode:
+
+```bash
+python3 -m venv .model-download
+.model-download/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch==2.13.0
+.model-download/bin/pip install -r requirements-core.txt
+.model-download/bin/python scripts/download_cpu_models.py
+rm -rf .model-download
+```
+
+3. Make writable directories accessible to the non-root container user:
+
+```bash
+mkdir -p storage/raw storage/parsed storage/models
+sudo chown -R 10001:10001 storage/parsed
+chmod 600 .env.docker
+```
+
+4. Build and start services:
 
 ```bash
 docker compose -f docker-compose.vps.yml --env-file .env.docker up -d --build
 ```
 
-3. Check status and logs:
+5. Check status and logs:
 
 ```bash
 docker compose -f docker-compose.vps.yml ps
 docker compose -f docker-compose.vps.yml logs -f app
 ```
 
-4. Verify API:
+6. Verify liveness and readiness:
 
 ```bash
-curl http://localhost:8000/healthz -H "X-API-Key: <YOUR_API_KEY>"
+curl http://localhost:8000/livez
+curl http://localhost:8000/readyz -H "X-API-Key: <YOUR_API_KEY>"
 ```
+
+`/readyz` deliberately returns `503` if existing vectors were created by another embedding
+model. Put every original file back into `storage/raw` and call `/ingest` with
+`"reindex": true`; vectors produced by different embedding models must never be mixed.
+The service is bound to `127.0.0.1:8000`; expose it only through a TLS reverse proxy.
 
 ### Change number of workers
 
-You can change uvicorn workers without rebuilding image:
+You can change uvicorn workers without rebuilding image. For the target 8-core/16-GB VPS,
+keep `UVICORN_WORKERS=2` and `CPU_THREADS_PER_WORKER=3`; four model copies usually reduce
+throughput and leave too little memory for MinerU and PostgreSQL.
 
 - edit `.env.docker` and set `UVICORN_WORKERS` (for example `4`), then restart app:
 
 ```bash
 docker compose -f docker-compose.vps.yml --env-file .env.docker up -d app
-```
-
-- or override for one run:
-
-```bash
-UVICORN_WORKERS=4 docker compose -f docker-compose.vps.yml --env-file .env.docker up -d app
 ```
 
 The container command uses `--workers ${UVICORN_WORKERS:-2}`.
@@ -327,7 +388,7 @@ curl http://localhost:8000/metrics -H "X-API-Key: super-secret-key"
 curl -X POST http://localhost:8000/ingest \
   -H "Content-Type: application/json" \
   -H "X-Admin-API-Key: super-admin-secret-key" \
-  -d '{"input_path":"storage/raw","collection":"default","reindex":false}'
+  -d '{"input_path":"/app/storage/raw","collection":"default","reindex":false}'
 ```
 
 ### Retrieve
@@ -472,15 +533,17 @@ curl -X POST http://localhost:8000/sources -H "Content-Type: application/json" -
 - GET endpoints (`/healthz`, `/readyz`, `/metrics`) are protected by `X-API-Key`.
 - `POST /ingest` is admin-only and requires `X-Admin-API-Key`.
 - Models are initialized once at startup and reused across requests for better parallel performance.
-- For production/offline deployments, pre-download the embedding model and set `EMBED_MODEL=storage/models/all-MiniLM-L6-v2` plus `EMBED_OFFLINE=true`. See [Local embedding models](docs/local_models.md).
-- Retrieval candidate recall uses pgvector ANN in SQL (`embedding <=> query_vector` + top-N) before hybrid BM25 and rerank to reduce Python CPU/RAM on large datasets.
+- For Russian production/offline deployments, use the local multilingual embedding/reranker paths from `.env.docker.example` and keep both offline flags enabled.
+- Retrieval candidate recall uses pgvector HNSW plus a GIN-indexed Russian full-text path before a bounded cross-encoder rerank.
+- The embedding fingerprint stored with every indexed document is checked by `/readyz` and every retrieval; changing `EMBED_MODEL` requires a complete reindex.
 - Retrieval debug mode exposes ranking reasons such as `full_phrase_match`, `missing_required_terms`, `concept_boost_applied`, `exercise_demoted_for_concept_lookup`, `schema_or_rule_boost_applied`, and `final_rank_reason`.
 - The parser uses RAG-Anything when available in runtime; if unavailable it degrades to lightweight local parsers for TXT/MD/PDF/DOCX.
 - `page` remains optional in all APIs.
 - In production keep `FAIL_ON_EMBEDDING_FALLBACK=true` to avoid silent hash-embedding fallback and low-quality retrieval.
 
 ## Troubleshooting dependencies
-- If your environment cannot resolve a pinned wheel for `pillow`, use the unpinned `pillow` entry from `requirements.txt` (already configured in this repo) so `pip` can pick a compatible build.
+- Dependencies are pinned for reproducible Linux x86_64 builds; change a pin only after
+  rebuilding the image and rerunning unit, quality and load gates.
 - `RAG-Anything` pulls `mineru[core]`, which requires `pypdf>=5.6.0`; therefore this repo uses `pypdf>=5.6.0,<6` to avoid resolver conflicts.
 - If installation is still slow because of resolver backtracking, install core deps first and then install RAG-Anything last:
   1. `pip install -r requirements-core.txt --no-deps`
@@ -501,9 +564,9 @@ curl -X POST http://localhost:8000/sources -H "Content-Type: application/json" -
   ```bash
   curl -X POST http://localhost:8000/retrieve -H "Content-Type: application/json" -H "X-API-Key: super-secret-key" -d "{\"query\":\"морфологический разбор\",\"top_k\":10,\"min_score\":0.35,\"debug\":true}"
   ```
-- MinerU + transformers incompatibility (`cache_position`): if logs show `UnimerMBartForCausalLM.forward() got an unexpected keyword argument 'cache_position'`, pin transformers to MinerU-compatible version and restart service:
-  1. `pip install "transformers==4.35.0"`
-  2. restart API process (`uvicorn`/systemd).
-- Embeddings dependency mismatch (`split_torch_state_dict_into_shards` / `huggingface_hub` / `accelerate`): run `scripts/repair_env.ps1` (PowerShell) to reinstall a compatible core stack (`huggingface-hub<0.18`, `tokenizers==0.14.1`), then restart API.
-- Embedding model unavailable with SSL/network errors from HuggingFace: download the model once into `storage/models/all-MiniLM-L6-v2`, set `EMBED_MODEL=storage/models/all-MiniLM-L6-v2` and `EMBED_OFFLINE=true`, then restart the API. See [Local embedding models](docs/local_models.md).
-- Recommended compatible ML stack for this service: `transformers==4.35.0`, `huggingface-hub>=0.16.4,<0.18`, `tokenizers==0.14.1`, `sentence-transformers>=2.2`, `safetensors` (accelerate moved to optional `requirements-accelerate.txt`).
+- Keep the core and MinerU environments isolated: their independently pinned Torch/Transformers
+  stacks are intentionally different. Recreate the affected environment from
+  `requirements-core.txt` or `requirements-mineru.txt` plus `constraints-mineru.txt`
+  instead of installing ad-hoc compatibility pins into the running container.
+- If an offline model is unavailable, run `scripts/download_cpu_models.py` before starting
+  Compose and verify that both local directories from `.env.docker` exist.

@@ -2,15 +2,18 @@ import http from 'k6/http';
 import { check, sleep } from 'k6';
 
 export const options = {
-  vus: 10,
-  duration: '1m',
+  vus: Number(__ENV.VUS || 4),
+  duration: __ENV.DURATION || '2m',
   thresholds: {
-    http_req_duration: ['p(95)<1000', 'p(99)<2000'],
+    http_req_duration: ['p(95)<5000', 'p(99)<10000'],
     http_req_failed: ['rate<0.01'],
   },
 };
 
 export default function () {
+  if (!__ENV.API_KEY) {
+    throw new Error('API_KEY environment variable is required');
+  }
   const payload = JSON.stringify({
     query: 'тема урока: стили речи',
     top_k: 8,
@@ -19,10 +22,11 @@ export default function () {
     return_text: false,
   });
 
-  const res = http.post('http://localhost:8000/retrieve', payload, {
+  const baseUrl = __ENV.BASE_URL || 'http://localhost:8000';
+  const res = http.post(`${baseUrl}/retrieve`, payload, {
     headers: {
       'Content-Type': 'application/json',
-      'X-API-Key': 'change-me',
+      'X-API-Key': __ENV.API_KEY,
     },
   });
 

@@ -13,10 +13,12 @@ from app.document_intelligence import (
 )
 from app.config import settings
 from app.repository import (
+    RagRepository,
     RetrievalRow,
     MAX_DB_SNIPPET_CHARS,
     _bm25_scores,
     _normalize_rerank_scores,
+    _metadata_with_inferred_section,
     _query_terms_for_scoring,
     apply_adaptive_threshold,
     anchor_phrase_score,
@@ -170,6 +172,37 @@ def test_query_understanding_detects_retrieval_intent(query, query_type):
     assert analyze_query(query)["query_type"] == query_type
 
 
+def test_query_understanding_detects_out_of_domain_school_subjects():
+    assert analyze_query("Сформулируй закон Ома для электрической цепи")["primary_subject"] == "physics"
+    assert analyze_query("Площадь равнобедренного треугольника")["primary_subject"] == "math"
+
+
+def test_retrieve_does_not_remove_filter_when_document_router_rejects_everything():
+    repository = object.__new__(RagRepository)
+    repository.validate_embedding_compatibility = lambda collection: None
+    repository._document_prefilter = lambda *args, **kwargs: (
+        [],
+        {},
+        {},
+        [],
+        [{"reason": "subject_mismatch"}],
+    )
+
+    def unexpected_recall(*args, **kwargs):
+        raise AssertionError("fragment recall must not run without an eligible document")
+
+    repository._dense_recall = unexpected_recall
+    repository._keyword_recall = unexpected_recall
+
+    assert repository.retrieve(
+        query="закон Ома",
+        top_k=3,
+        min_score=0.2,
+        collection="default",
+        source_uris=None,
+    ) == []
+
+
 @pytest.mark.parametrize(
     ("text", "chunk_type"),
     [
@@ -177,6 +210,23 @@ def test_query_understanding_detects_retrieval_intent(query, query_type):
         ("А4. Часть речи неправильно определена. А5. Верно определены морфологические признаки у слова.", "test_question"),
         ("А1. Укажите верный ответ. 1) существительное 2) глагол 3) союз 4) частица", "test_question"),
         ("Приложение Планы разборов 238 Морфологический разбор имени существительного 239", "navigation_index"),
+        (
+            "Фонетика. Графика. Орфография 167 Лексикология. Фразеология. Орфография 172 "
+            "Морфемика. Словообразование. Орфография 181 Морфология. Орфография 186 "
+            "Синтаксис. Пунктуация 204 Употребление знаков препинания 222",
+            "navigation_index",
+        ),
+        (
+            "§ 15. Запятая и точка с запятой в бессоюзном сложном предложении 123 "
+            "§ 16. Двоеточие в бессоюзном сложном предложении 125 "
+            "§ 17. Тире в бессоюзном сложном предложении 130 Реферат 136",
+            "navigation_index",
+        ),
+        (
+            "§ 20. Роль языка в жизни общества. Язык как исторически развивающееся явление 150 "
+            "§ 21. Русский литературный язык и его стили 159",
+            "navigation_index",
+        ),
         ("Порядок морфологического разбора имени существительного. I. Часть речи. II. Морфологические признаки. III. Синтаксическая роль.", "schema_or_plan"),
         ("Квадратное уравнение - это уравнение вида ax2 + bx + c = 0.", "definition"),
         ("Правило: в полных причастиях пишется НН при наличии приставки.", "rule"),
@@ -185,6 +235,32 @@ def test_query_understanding_detects_retrieval_intent(query, query_type):
 )
 def test_chunk_type_detection_is_intent_aware(text, chunk_type):
     assert detect_chunk_type(text) == chunk_type
+
+
+def test_numbered_definition_examples_are_not_misclassified_as_exercise():
+    text = (
+        "Придаточные изъяснительные отвечают на падежные вопросы. "
+        "Они относятся к словам со значением речи, мысли или чувства. "
+        "Это чаще всего глаголы речи и мысли. "
+        "Например: 1) Я сказал, что приду. 2) Он подумал, что успеет. "
+        "3) Я рад, что вы пришли. 4) Говорили, будто его видели. "
+        "5) Известно, что поезд прибыл. 6) Она спросила, придём ли мы."
+    )
+    assert detect_chunk_type(text) == "definition"
+
+
+def test_expanded_context_preserves_curated_section_title():
+    row = _row(
+        "heading",
+        0.8,
+        "305. Прочитайте текст. Выделите авторские знаки и объясните их постановку.",
+    )
+    row.meta = {"section_title": "§ 19. Авторские знаки препинания"}
+
+    meta = _metadata_with_inferred_section(row)
+
+    assert meta["section_title"] == "§ 19. Авторские знаки препинания"
+    assert meta["section_title_reason"] == "meta:section_title"
 
 
 def test_section_title_extraction_rejects_plan_steps_test_labels_and_numeric_noise():
@@ -311,6 +387,23 @@ def test_required_exact_phrase_modifiers_are_universal(query, matching_text, wro
     assert by_id["wrong"].phrase_score <= 0.2
     assert by_id["matching"].matched_phrases
     assert by_id["wrong"].missing_required_modifiers
+
+
+def test_year_phrase_accepts_common_russian_abbreviation():
+    scored, rejected = score_retrieval_candidates(
+        "Отечественная война 1812 года",
+        [
+            _row(
+                "year-abbreviation",
+                0.7,
+                "Партизан Отечественной войны 1812 г. участвовал в заграничном походе.",
+                "history.pdf",
+            )
+        ],
+    )
+
+    assert rejected == []
+    assert scored[0].matched_phrases == ["война 1812 года"]
 
 
 def test_wrong_entity_modifier_is_rejected_from_alexander_i_top8():

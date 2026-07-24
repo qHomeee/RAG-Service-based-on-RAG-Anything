@@ -7,11 +7,15 @@ from app.config import settings
 from app.document_intelligence import build_document_profile, detect_chunk_type_details, infer_section_title_details, is_toc_text, text_quality_flags
 from app.parser import RAGAnythingParser
 from app.repository import RagRepository
-from app.schemas import CanonicalFragment, QueryResponse, Source, SourceInfo
+from app.schemas import CanonicalFragment, ParsedElement, QueryResponse, Source, SourceInfo
 from app.utils import snippet_from_text, stable_fragment_id
 
 SUPPORTED_EXTENSIONS = {".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".txt", ".md", ".png", ".jpg", ".jpeg"}
 logger = logging.getLogger("rag_service")
+
+
+class IngestLimitError(ValueError):
+    pass
 
 
 class RagService:
@@ -22,12 +26,29 @@ class RagService:
     def ingest(self, input_path: str, collection: str, reindex: bool) -> dict[str, int]:
         root = Path(input_path)
         files = [p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS]
+        if len(files) > settings.max_ingest_files:
+            raise IngestLimitError(
+                f"Too many files: {len(files)}; maximum is {settings.max_ingest_files}"
+            )
+        max_file_bytes = settings.max_file_size_mb * 1024 * 1024
+        oversized = [path for path in files if path.stat().st_size > max_file_bytes]
+        if oversized:
+            raise IngestLimitError(
+                f"File exceeds MAX_FILE_SIZE_MB={settings.max_file_size_mb}: {oversized[0].name}"
+            )
+        total_bytes = sum(path.stat().st_size for path in files)
+        if total_bytes > settings.max_ingest_batch_mb * 1024 * 1024:
+            raise IngestLimitError(
+                f"Ingest batch exceeds MAX_INGEST_BATCH_MB={settings.max_ingest_batch_mb}"
+            )
 
         indexed_docs = indexed_fragments = indexed_vectors = 0
         fallback_docs = 0
         for file_path in files:
             source_uri = str(file_path.relative_to(root)).replace("\\", "/")
             parsed, parse_mode = self.parser.parse_file_with_mode(source_uri=source_uri, path=file_path, reindex=reindex)
+            if settings.coalesce_parsed_elements_enabled:
+                parsed = coalesce_parsed_elements(parsed)
             if parse_mode == "fallback":
                 fallback_docs += 1
 
@@ -38,8 +59,10 @@ class RagService:
                 parsed_elements=parsed,
                 collection=collection,
             )
-            if hasattr(self.repository, "embeddings"):
-                document_profile["summary_embedding"] = self.repository.embeddings.embed(document_profile["profile_text"])
+            embedding_provider = getattr(self.repository, "embeddings", None)
+            embedding_fingerprint = getattr(embedding_provider, "model_fingerprint", None)
+            if embedding_provider is not None:
+                document_profile["summary_embedding"] = embedding_provider.embed(document_profile["profile_text"])
             else:
                 document_profile["summary_embedding"] = []
             doc = self.repository.upsert_document(
@@ -50,6 +73,7 @@ class RagService:
                     **_infer_document_metadata(file_path, root, collection),
                     "path": str(file_path),
                     "parse_mode": parse_mode,
+                    "embedding_fingerprint": embedding_fingerprint,
                     "document_profile": document_profile,
                     "subject": document_profile["subject"],
                     "grade": document_profile["grade"],
@@ -80,7 +104,8 @@ class RagService:
 
                 for chunk_idx, chunk in enumerate(structured_chunks):
                     element_sort_index = elem.element_index * 10_000 + chunk_idx
-                    fragment_id = stable_fragment_id(source_uri, element_sort_index, chunk.text)
+                    fragment_source_key = source_uri if collection == "default" else f"{collection}:{source_uri}"
+                    fragment_id = stable_fragment_id(fragment_source_key, element_sort_index, chunk.text)
                     meta = dict(elem.meta)
                     inferred_heading_path = chunk.heading_path or _heading_path_from_meta(meta)
                     section_details = infer_section_title_details(chunk.text, meta=meta)
@@ -290,6 +315,7 @@ class RagService:
         min_score: float,
         collection: str,
         source_uris: list[str] | None,
+        return_sources: bool = True,
     ) -> QueryResponse:
         final_top_k = min(top_k, settings.rag_final_top_k)
         hits = self.retrieve(query, final_top_k, min_score, collection, source_uris, return_text=False)
@@ -310,7 +336,7 @@ class RagService:
         ]
         bullets = "\n".join([f"[{s.n}] {s.snippet}" for s in sources[:3]])
         answer = f"Найденные подтверждённые фрагменты:\n{bullets}"
-        return QueryResponse(answer=answer, sources=sources)
+        return QueryResponse(answer=answer, sources=sources if return_sources else [])
 
     def list_sources(self, collection: str) -> list[SourceInfo]:
         rows = self.repository.list_sources(collection)
@@ -354,3 +380,49 @@ def _heading_path_from_meta(meta: dict) -> list[str]:
         if isinstance(value, str) and value.strip():
             return [value.strip()]
     return []
+
+
+def coalesce_parsed_elements(elements: list[ParsedElement]) -> list[ParsedElement]:
+    """Merge adjacent short text elements on the same page before chunking."""
+    merged: list[ParsedElement] = []
+    buffer: list[ParsedElement] = []
+
+    def flush() -> None:
+        if not buffer:
+            return
+        first = buffer[0]
+        content = "\n".join(item.content.strip() for item in buffer if item.content.strip()).strip()
+        meta = dict(first.meta)
+        if len(buffer) > 1:
+            meta["merged_element_indices"] = [item.element_index for item in buffer]
+        merged.append(
+            ParsedElement(
+                element_index=first.element_index,
+                type=first.type,
+                content=content,
+                page=first.page,
+                meta=meta,
+            )
+        )
+        buffer.clear()
+
+    for element in elements:
+        if element.type != "text":
+            flush()
+            merged.append(element)
+            continue
+
+        if buffer and buffer[0].page != element.page:
+            flush()
+
+        candidate = "\n".join([*(item.content for item in buffer), element.content]).strip()
+        if buffer and len(candidate) > settings.adaptive_chunk_max_chars:
+            flush()
+
+        buffer.append(element)
+        current_size = sum(len(item.content) for item in buffer) + max(0, len(buffer) - 1)
+        if current_size >= settings.adaptive_chunk_min_chars:
+            flush()
+
+    flush()
+    return merged

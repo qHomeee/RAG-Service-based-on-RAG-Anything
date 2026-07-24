@@ -1,5 +1,8 @@
 .venv/
 .venv-mineru/
+__pycache__/
+*.py[cod]
+.pytest_cache/
 storage/raw/
 storage/parsed/
 .env

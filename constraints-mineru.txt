@@ -1,2 +1,10 @@
-# Optional pinned constraints for MinerU venv reproducibility in Docker/VPS.
-# Use with: pip install -r requirements-mineru.txt -c constraints-mineru.txt
+mineru==2.0.6
+torch==2.11.0
+transformers==5.5.0
+ultralytics==8.4.33
+doclayout-yolo==0.0.4
+rapid-table==3.0.1
+shapely==2.1.2
+fast-langdetect==1.0.0
+dill==0.4.1
+pyclipper==1.4.0

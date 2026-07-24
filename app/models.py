@@ -16,9 +16,10 @@ class Base(DeclarativeBase):
 
 class Document(Base):
     __tablename__ = "documents"
+    __table_args__ = (UniqueConstraint("collection", "source_uri", name="uq_documents_collection_source"),)
 
     doc_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    source_uri: Mapped[str] = mapped_column(String, unique=True, index=True)
+    source_uri: Mapped[str] = mapped_column(String, index=True)
     title: Mapped[str | None] = mapped_column(String, nullable=True)
     collection: Mapped[str] = mapped_column(String, default="default", index=True)
     meta: Mapped[dict] = mapped_column(JSONB, default=dict)

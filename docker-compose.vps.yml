@@ -1,45 +1,133 @@
+name: rag-service
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   app:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: rag-service
+    image: rag-service:cpu-production
     restart: unless-stopped
+    init: true
+    read_only: true
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging: *default-logging
     env_file:
       - .env.docker
     environment:
-      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/rag
-      MINERU_PYTHON: /app/.venv-mineru/bin/python
-      DISABLE_MINERU_LLM: "1"
-      UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
+      CUDA_VISIBLE_DEVICES: ""
+      OMP_NUM_THREADS: ${CPU_THREADS_PER_WORKER:-3}
+      MKL_NUM_THREADS: ${CPU_THREADS_PER_WORKER:-3}
+      OPENBLAS_NUM_THREADS: ${CPU_THREADS_PER_WORKER:-3}
+      TOKENIZERS_PARALLELISM: "false"
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./storage/models:/app/storage/models:ro
+      - ./storage/raw:/app/storage/raw:ro
+      - ./storage/parsed:/app/storage/parsed
+      - mineru_cache:/home/rag/.cache
+    tmpfs:
+      - /tmp:size=512m,uid=10001,gid=10001,mode=1770
+    mem_limit: 10g
+    cpus: 6.0
+    stop_grace_period: 90s
+
+  migrate:
+    image: pgvector/pgvector:pg16
+    restart: "no"
+    logging: *default-logging
     depends_on:
       postgres:
         condition: service_healthy
-    ports:
-      - "8000:8000"
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB:-rag}
+      PGUSER: ${POSTGRES_USER:-rag}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
     volumes:
-      - ./storage/models:/app/storage/models:ro
-    command: >
-      /bin/sh -c "/app/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-2}"
+      - ./migrations:/migrations:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        echo "Applying /migrations/init.sql"
+        psql -v ON_ERROR_STOP=1 -f /migrations/init.sql
+        for file in /migrations/20*.sql; do
+          echo "Applying $$file"
+          psql -v ON_ERROR_STOP=1 -f "$$file"
+        done
 
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: rag-postgres
     restart: unless-stopped
+    logging: *default-logging
     environment:
-      POSTGRES_DB: rag
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-rag}
+      POSTGRES_USER: ${POSTGRES_USER:-rag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - effective_cache_size=3GB
+      - -c
+      - maintenance_work_mem=512MB
+      - -c
+      - work_mem=16MB
+      - -c
+      - max_connections=30
+      - -c
+      - random_page_cost=1.1
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d rag"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
-      retries: 20
-    ports:
-      - "5432:5432"
+      retries: 30
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./migrations/init.sql:/docker-entrypoint-initdb.d/init.sql
+    mem_limit: 3g
+    cpus: 1.5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 192mb
+      - --maxmemory-policy
+      - allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - redisdata:/data
+    mem_limit: 256m
+    cpus: 0.5
 
 volumes:
   pgdata:
+  redisdata:
+  mineru_cache:

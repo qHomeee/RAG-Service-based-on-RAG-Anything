@@ -43,6 +43,34 @@ _STOPWORDS = {
     "под",
     "при",
     "про",
+    "как",
+    "что",
+    "кто",
+    "какой",
+    "какая",
+    "какое",
+    "какие",
+    "когда",
+    "почему",
+    "где",
+    "чем",
+    "сколько",
+    "такое",
+    "был",
+    "была",
+    "было",
+    "были",
+    "бывает",
+    "бывают",
+    "изучает",
+    "изучают",
+    "отвечает",
+    "отвечают",
+    "отличить",
+    "расставлять",
+    "ставится",
+    "ставятся",
+    "устроено",
     "с",
     "со",
     "у",
@@ -578,9 +606,16 @@ def detect_chunk_type_details(text: str, *, meta: dict[str, Any] | None = None, 
     command_count = sum(1 for command in EXERCISE_COMMANDS if _phrase_match(command, normalized))
     numbered_tasks = len(re.findall(r"(?<!\d)(?:упр\.\s*)?\d{1,4}\s*[.)]\s+[А-ЯЁA-Zа-яёa-z]", text or ""))
     dense_numbered_items = len(re.findall(r"(?<!\d)\d{1,2}\s*[.)]\s+", text or ""))
+    theory_context = (
+        "теоретическ" in normalized
+        and ("информац" in normalized or "сведен" in normalized)
+        and any(_phrase_match(marker, normalized) for marker in DEFINITION_MARKERS)
+    )
+    if theory_context:
+        return {"chunk_type": "definition", "chunk_type_reason": "theory_with_definition"}
     if command_count >= 1 and (numbered_tasks >= 1 or len(tokens) <= 160):
         return {"chunk_type": "exercise", "chunk_type_reason": "exercise_command"}
-    if command_count >= 2 or dense_numbered_items >= 5:
+    if command_count >= 2 or (command_count >= 1 and dense_numbered_items >= 5):
         return {"chunk_type": "exercise", "chunk_type_reason": "multiple_tasks_or_commands"}
 
     if _looks_like_navigation_index(text, page=page):
@@ -760,7 +795,13 @@ def _looks_like_navigation_index(text: str, *, page: int | None = None) -> bool:
 
     if marker_found and len(page_numbers) >= 1 and len(tokens) <= 24:
         return True
+    if normalized.count("§") >= 3 and len(page_numbers) >= 3:
+        return True
+    if normalized.count("§") >= 2 and len(page_numbers) >= 2 and len(tokens) <= 30:
+        return True
     if marker_found and (flat_entries >= 2 or len(page_numbers) >= 4) and coherent_ratio <= 0.35:
+        return True
+    if flat_entries >= 5 and coherent_ratio <= 0.35:
         return True
     if early_page and flat_entries >= 5 and coherent_ratio <= 0.35:
         return True

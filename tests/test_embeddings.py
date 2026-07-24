@@ -105,7 +105,95 @@ def test_embedding_provider_existing_local_path_uses_local_files_only(monkeypatc
     provider = EmbeddingProvider()
 
     assert provider.using_fallback is False
+    assert provider.model_fingerprint.startswith("sha256:")
     assert calls == [(str(model_dir.resolve()), {"local_files_only": True})]
+
+
+def test_embedding_provider_caches_repeated_text(monkeypatch, tmp_path):
+    model_dir = tmp_path / "cached-model"
+    model_dir.mkdir()
+    (model_dir / "modules.json").write_text("[]", encoding="utf-8")
+    encode_calls = []
+
+    class Encoded:
+        def tolist(self):
+            return [0.0] * settings.embed_dim
+
+    class FakeSentenceTransformer:
+        def __init__(self, model_name_or_path, **kwargs):
+            pass
+
+        def encode(self, text, **kwargs):
+            encode_calls.append(text)
+            return Encoded()
+
+    _mock_sentence_transformer_class(monkeypatch, FakeSentenceTransformer)
+    monkeypatch.setattr(settings, "fail_on_embedding_fallback", True)
+    monkeypatch.setattr(settings, "embed_model", str(model_dir))
+    provider = EmbeddingProvider()
+
+    assert provider.embed("одинаковый запрос") == provider.embed("одинаковый запрос")
+    assert encode_calls == ["одинаковый запрос"]
+
+
+def test_embedding_provider_encodes_batches(monkeypatch, tmp_path):
+    model_dir = tmp_path / "batch-model"
+    model_dir.mkdir()
+    (model_dir / "modules.json").write_text("[]", encoding="utf-8")
+    encode_calls = []
+
+    class Encoded:
+        def tolist(self):
+            return [[0.1] * settings.embed_dim, [0.2] * settings.embed_dim]
+
+    class FakeSentenceTransformer:
+        def __init__(self, model_name_or_path, **kwargs):
+            pass
+
+        def encode(self, texts, **kwargs):
+            encode_calls.append((texts, kwargs))
+            return Encoded()
+
+    _mock_sentence_transformer_class(monkeypatch, FakeSentenceTransformer)
+    monkeypatch.setattr(settings, "fail_on_embedding_fallback", True)
+    monkeypatch.setattr(settings, "embed_model", str(model_dir))
+    provider = EmbeddingProvider()
+
+    vectors = provider.embed_many(["первый", "второй"], batch_size=7)
+
+    assert len(vectors) == 2
+    assert len(vectors[0]) == settings.embed_dim
+    assert encode_calls == [
+        (
+            ["первый", "второй"],
+            {
+                "batch_size": 7,
+                "normalize_embeddings": True,
+                "show_progress_bar": False,
+            },
+        )
+    ]
+
+
+def test_embedding_provider_rejects_invalid_batch_dimension(monkeypatch, tmp_path):
+    model_dir = tmp_path / "invalid-batch-model"
+    model_dir.mkdir()
+    (model_dir / "modules.json").write_text("[]", encoding="utf-8")
+
+    class FakeSentenceTransformer:
+        def __init__(self, model_name_or_path, **kwargs):
+            pass
+
+        def encode(self, texts, **kwargs):
+            return [[0.0] * 12 for _ in texts]
+
+    _mock_sentence_transformer_class(monkeypatch, FakeSentenceTransformer)
+    monkeypatch.setattr(settings, "fail_on_embedding_fallback", True)
+    monkeypatch.setattr(settings, "embed_model", str(model_dir))
+    provider = EmbeddingProvider()
+
+    with pytest.raises(RuntimeError, match="Embedding batch mismatch"):
+        provider.embed_many(["текст"])
 
 
 def test_embedding_provider_offline_huggingface_id_passes_local_files_only(monkeypatch):

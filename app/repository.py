@@ -154,6 +154,10 @@ class RequiredTermSignals:
     missing_required_terms: list[str]
 
 
+class EmbeddingModelMismatchError(RuntimeError):
+    pass
+
+
 class RagRepository:
     def __init__(self, db: Session, embeddings: EmbeddingProvider, reranker: CrossEncoderReranker) -> None:
         self.db = db
@@ -161,12 +165,39 @@ class RagRepository:
         self.reranker = reranker
 
     def upsert_document(self, source_uri: str, title: str | None, collection: str, meta: dict, reindex: bool) -> Document:
-        doc = self.db.scalar(select(Document).where(Document.source_uri == source_uri))
+        doc = self.db.scalar(
+            select(Document).where(
+                Document.collection == collection,
+                Document.source_uri == source_uri,
+            )
+        )
+        incoming_fingerprint = meta.get("embedding_fingerprint")
+        stored_fingerprint = (doc.meta or {}).get("embedding_fingerprint") if doc else None
+        if doc and not reindex and incoming_fingerprint and stored_fingerprint != incoming_fingerprint:
+            has_vectors = self.db.execute(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM fragments f
+                        JOIN embeddings e ON e.fragment_id = f.fragment_id
+                        WHERE f.doc_id = CAST(:doc_id AS uuid)
+                    )
+                    """
+                ),
+                {"doc_id": str(doc.doc_id)},
+            ).scalar()
+            if has_vectors:
+                raise EmbeddingModelMismatchError(
+                    f"{source_uri} was indexed by another embedding model; run ingest with reindex=true"
+                )
         if doc and reindex:
             self.db.execute(delete(Embedding).where(Embedding.fragment_id.in_(select(Fragment.fragment_id).where(Fragment.doc_id == doc.doc_id))))
             self.db.execute(delete(Fragment).where(Fragment.doc_id == doc.doc_id))
             self.db.flush()
         if doc:
+            doc.title = title
+            doc.collection = collection
             doc.meta = {**(doc.meta or {}), **meta}
             self.db.flush()
             return doc
@@ -203,7 +234,11 @@ class RagRepository:
                     subchunk_index=idx,
                     text=subchunk,
                     embedding=emb,
-                    meta={"offset": idx, "search_text": True},
+                    meta={
+                        "offset": idx,
+                        "search_text": True,
+                        "embedding_fingerprint": getattr(self.embeddings, "model_fingerprint", None),
+                    },
                 )
             )
             count += 1
@@ -245,6 +280,7 @@ class RagRepository:
         *,
         debug: bool = False,
     ) -> RetrievalResult:
+        self.validate_embedding_compatibility(collection)
         normalized_query = normalize_query(query)
         query_terms = _query_terms_for_scoring(normalized_query)
         query_analysis = analyze_query(normalized_query)
@@ -307,6 +343,9 @@ class RagRepository:
                 subject_scores[source_uri] = max(subject_scores.get(source_uri, 0.0), score)
             diagnostics["selected_documents"].extend(selected_docs)
             diagnostics["rejected_documents"].extend(rejected_docs)
+            if doc_filter_uris == []:
+                candidate_groups.append([])
+                continue
 
             dense_candidates = self._dense_recall(
                 single_query,
@@ -329,7 +368,6 @@ class RagRepository:
             diagnostics["document_candidates"] += len(single_doc_scores)
 
         fused_candidates = _merge_candidates(*candidate_groups)
-        self._hydrate_fragment_metadata(fused_candidates)
         for row in fused_candidates:
             row.document_score = max(row.document_score, doc_scores.get(row.source_uri, 0.0))
             row.subject_score = max(row.subject_score, subject_scores.get(row.source_uri, 0.5))
@@ -339,21 +377,16 @@ class RagRepository:
             logger.debug("retrieval_empty_after_fusion", extra=diagnostics)
             return RetrievalResult(hits=[], debug=diagnostics if debug else None)
 
-        fused_candidates = self._expand_context(fused_candidates)
-        preliminary_scored, rejected = score_retrieval_candidates(
-            normalized_query,
-            fused_candidates,
-            query_analysis=query_analysis,
-            apply_noise_filter=True,
-        )
-        diagnostics["rejected_results"].extend(rejected)
-        diagnostics["candidates_after_noise_filter"] = len(preliminary_scored)
-        if not preliminary_scored:
-            logger.debug("retrieval_empty_after_noise_filter", extra=diagnostics)
-            return RetrievalResult(hits=[], debug=diagnostics if debug else None)
-
         rerank_limit = max(top_k, settings.rerank_top_n)
-        rerank_candidates = preliminary_scored[:rerank_limit]
+        rerank_candidates = _balanced_prerank(
+            fused_candidates,
+            limit=rerank_limit,
+            query_terms=query_terms,
+        )
+        self._hydrate_fragment_metadata(rerank_candidates)
+        rerank_candidates = self._expand_context(rerank_candidates)
+        diagnostics["candidates_pruned_before_rerank"] = max(0, len(fused_candidates) - len(rerank_candidates))
+        diagnostics["candidates_after_noise_filter"] = len(rerank_candidates)
 
         if self.reranker.available:
             raw_rerank_scores = self.reranker.score(normalized_query, [item.text for item in rerank_candidates])
@@ -416,6 +449,46 @@ class RagRepository:
         )
         return RetrievalResult(hits=final_hits, debug=diagnostics if debug else None)
 
+    def embedding_compatibility(self, collection: str | None = None) -> dict[str, Any]:
+        expected = getattr(self.embeddings, "model_fingerprint", None)
+        if not expected or not settings.enforce_embedding_model_compatibility:
+            return {"compatible": True, "expected": expected, "indexed_documents": 0, "incompatible_sources": []}
+
+        collection_clause = "AND d.collection = :collection" if collection is not None else ""
+        rows = self.db.execute(
+            text(
+                f"""
+                SELECT d.source_uri, d.meta->>'embedding_fingerprint' AS fingerprint
+                FROM documents d
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM fragments f
+                    JOIN embeddings e ON e.fragment_id = f.fragment_id
+                    WHERE f.doc_id = d.doc_id
+                )
+                {collection_clause}
+                ORDER BY d.source_uri
+                """
+            ),
+            {"collection": collection} if collection is not None else {},
+        ).mappings().all()
+        incompatible = [row["source_uri"] for row in rows if row["fingerprint"] != expected]
+        return {
+            "compatible": not incompatible,
+            "expected": expected,
+            "indexed_documents": len(rows),
+            "incompatible_sources": incompatible[:20],
+        }
+
+    def validate_embedding_compatibility(self, collection: str | None = None) -> None:
+        status = self.embedding_compatibility(collection)
+        if not status["compatible"]:
+            sample = ", ".join(status["incompatible_sources"][:3])
+            raise EmbeddingModelMismatchError(
+                "Embedding index is incompatible with the configured model"
+                f"{f': {sample}' if sample else ''}; reindex the affected collection"
+            )
+
     def _document_prefilter(
         self,
         query: str,
@@ -438,30 +511,30 @@ class RagRepository:
             ]
             return source_uris, {uri: 1.0 for uri in source_uris or []}, subject_scores, selected, []
 
-        dense_docs = self._dense_document_recall(query, collection=collection, limit=max(limit, settings.document_prefilter_top_n))
-        lexical_docs = self._keyword_document_recall(query_terms, collection=collection, limit=max(limit, settings.document_prefilter_top_n))
-        rank_scores = document_level_scores(dense_docs, lexical_docs)
         query_vector = self.embeddings.embed(query)
         routed: list[tuple[str, float, float, float, float, dict[str, Any]]] = []
         rejected: list[dict[str, Any]] = []
         high_subject_confidence = float(query_analysis.get("subject_confidence") or 0.0) >= settings.retrieval_subject_confidence_threshold
 
         for source_uri, profile in profiles.items():
-            rank_score = rank_scores.get(source_uri, 0.0)
             lexical_profile_score = profile_lexical_score(query_analysis, profile)
             subject_score = subject_scores.get(source_uri, 0.5)
-            embedding_score = cosine_similarity(query_vector, profile.get("summary_embedding"))
+            embedding_score = max(
+                0.0,
+                2.0 * cosine_similarity(query_vector, profile.get("summary_embedding")) - 1.0,
+            )
+            rank_score = _clamp_score(0.55 * lexical_profile_score + 0.45 * embedding_score)
             score = _clamp_score(
                 0.35 * rank_score
-                + 0.25 * lexical_profile_score
-                + 0.25 * subject_score
+                + 0.30 * lexical_profile_score
+                + 0.20 * subject_score
                 + 0.15 * embedding_score
             )
             reason = None
             if high_subject_confidence and subject_score <= settings.retrieval_subject_mismatch_score and lexical_profile_score < 0.35:
                 reason = "subject_mismatch"
                 score *= settings.retrieval_subject_mismatch_penalty
-            elif score < settings.document_routing_min_score and rank_score <= 0.0 and lexical_profile_score <= 0.0:
+            elif score < settings.document_routing_min_score and lexical_profile_score <= 0.0:
                 reason = "low_document_score"
 
             if reason:
@@ -478,11 +551,8 @@ class RagRepository:
             | {"rank_score": round(rank_score, 4), "profile_lexical_score": round(lexical_profile_score, 4)}
             for source_uri, score, rank_score, lexical_profile_score, subject_score, profile in selected_routed
         ]
-        if not selected_uris and rank_scores:
-            fallback = list(rank_scores.keys())[:limit]
-            return fallback, {uri: rank_scores[uri] for uri in fallback}, subject_scores, selected, rejected
         if not selected_uris:
-            return None, {}, subject_scores, selected, rejected
+            return [], {}, subject_scores, selected, rejected
         return selected_uris, doc_scores, subject_scores, selected, rejected
 
     def _document_profiles(self, *, collection: str, source_uris: list[str] | None) -> dict[str, dict[str, Any]]:
@@ -592,6 +662,9 @@ class RagRepository:
 
         expanded: list[RetrievalRow] = []
         for hit in hits:
+            if hit.expanded_from_neighbors or (hit.meta or {}).get("expanded_from_neighbors") is True:
+                expanded.append(hit)
+                continue
             if not hit.doc_id or hit.element_index is None:
                 expanded.append(hit)
                 continue
@@ -648,6 +721,28 @@ class RagRepository:
             meta["expanded_text"] = context
             meta["expanded_from_neighbors"] = True
             quality = text_quality_flags(context, page=hit.page, meta=meta)
+            refreshed_meta = {
+                key: value
+                for key, value in meta.items()
+                if key not in {"chunk_type", "chunk_type_reason", "is_navigation_index"}
+            }
+            chunk_details = detect_chunk_type_details(context, meta=refreshed_meta, page=hit.page)
+            meta["chunk_type"] = chunk_details.get("chunk_type", "unknown")
+            meta["chunk_type_reason"] = chunk_details.get("chunk_type_reason")
+            meta["is_navigation_index"] = meta["chunk_type"] == "navigation_index"
+            for key in (
+                "is_toc",
+                "is_index",
+                "is_bibliography",
+                "is_caption",
+                "is_fragmented",
+                "is_too_short",
+                "starts_mid_word",
+                "low_text_quality",
+            ):
+                meta[key] = bool(quality.get(key))
+            meta["quality_score"] = float(quality.get("quality_score") or hit.quality_score)
+            meta["low_text_quality_reason"] = quality.get("low_text_quality_reason")
             expanded.append(
                 replace(
                     hit,
@@ -675,10 +770,12 @@ class RagRepository:
         qvec = self.embeddings.embed(query)
 
         source_clause = ""
+        subchunk_limit = max(limit, limit * max(1, settings.vector_subchunk_oversample))
         params: dict = {
             "qvec": _vector_literal(qvec),
             "collection": collection,
             "recall_top_n": limit,
+            "subchunk_recall_top_n": subchunk_limit,
         }
         if source_uris:
             source_clause = " AND d.source_uri = ANY(:source_uris)"
@@ -686,6 +783,17 @@ class RagRepository:
 
         sql = text(
             f"""
+            WITH nearest_subchunks AS MATERIALIZED (
+                SELECT
+                    e.fragment_id,
+                    e.embedding <=> CAST(:qvec AS vector) AS distance
+                FROM embeddings e
+                JOIN fragments nf ON nf.fragment_id = e.fragment_id
+                JOIN documents nd ON nd.doc_id = nf.doc_id
+                WHERE nd.collection = :collection{source_clause.replace("d.source_uri", "nd.source_uri")}
+                ORDER BY e.embedding <=> CAST(:qvec AS vector)
+                LIMIT :subchunk_recall_top_n
+            )
             SELECT
                 e.fragment_id,
                 f.doc_id,
@@ -696,8 +804,8 @@ class RagRepository:
                 f.element_index,
                 f.snippet,
                 f.text,
-                MIN(e.embedding <=> CAST(:qvec AS vector)) AS distance
-            FROM embeddings e
+                MIN(e.distance) AS distance
+            FROM nearest_subchunks e
             JOIN fragments f ON f.fragment_id = e.fragment_id
             JOIN documents d ON d.doc_id = f.doc_id
             WHERE d.collection = :collection{source_clause}
@@ -742,28 +850,11 @@ class RagRepository:
         if not terms:
             return []
 
-        params: dict = {"collection": collection, "recall_top_n": limit}
-        conditions: list[str] = []
-        rank_parts: list[str] = []
-        for idx, term_value in enumerate(terms):
-            param_name = f"kw{idx}"
-            params[param_name] = _sql_token_pattern(term_value)
-            text_expr = _sql_normalized_text("f.text")
-            snippet_expr = _sql_normalized_text("f.snippet")
-            title_expr = _sql_normalized_text("d.title")
-            source_expr = _sql_normalized_text("f.source_uri")
-            meta_expr = _sql_normalized_text("f.meta::text")
-            conditions.append(
-                f"({text_expr} ~ :{param_name} "
-                f"OR {snippet_expr} ~ :{param_name} "
-                f"OR {title_expr} ~ :{param_name} "
-                f"OR {source_expr} ~ :{param_name} "
-                f"OR {meta_expr} ~ :{param_name})"
-            )
-            rank_parts.append(
-                f"(CASE WHEN {text_expr} ~ :{param_name} THEN 1 ELSE 0 END)"
-                f" + (CASE WHEN {meta_expr} ~ :{param_name} THEN 1 ELSE 0 END)"
-            )
+        params: dict = {
+            "collection": collection,
+            "recall_top_n": limit,
+            "keyword_query": " OR ".join(terms),
+        }
 
         source_clause = ""
         if source_uris:
@@ -782,12 +873,18 @@ class RagRepository:
                 f.element_index,
                 f.snippet,
                 f.text,
-                f.meta
+                f.meta,
+                ts_rank_cd(
+                    f.search_tsv,
+                    websearch_to_tsquery('russian', :keyword_query)
+                ) AS lexical_rank
             FROM fragments f
             JOIN documents d ON d.doc_id = f.doc_id
             WHERE d.collection = :collection{source_clause}
-              AND ({" OR ".join(conditions)})
-            ORDER BY ({" + ".join(rank_parts)}) DESC, f.fragment_id ASC
+              AND f.search_tsv @@ websearch_to_tsquery('russian', :keyword_query)
+            ORDER BY
+                ts_rank_cd(f.search_tsv, websearch_to_tsquery('russian', :keyword_query)) DESC,
+                f.fragment_id ASC
             LIMIT :recall_top_n
             """
         )
@@ -805,9 +902,10 @@ class RagRepository:
                 page=row["page"],
                 element_index=row["element_index"],
                 snippet=row["snippet"],
-                score=0.0,
+                score=_normalize_fts_rank(row["lexical_rank"]),
                 text=row["text"],
                 meta=row["meta"] or {},
+                lexical_score=_normalize_fts_rank(row["lexical_rank"]),
             )
             for row in rows
         ]
@@ -822,6 +920,15 @@ class RagRepository:
 
 def _vector_literal(values: list[float]) -> str:
     return "[" + ",".join(str(float(v)) for v in values) + "]"
+
+
+def _normalize_fts_rank(value: Any) -> float:
+    try:
+        rank = max(0.0, float(value))
+    except (TypeError, ValueError):
+        return 0.0
+    return _clamp_score(rank / (rank + 0.5)) if rank else 0.0
+
 
 def _normalize_text_for_matching(text: str) -> str:
     normalized = (text or "").lower().replace("ё", "е")
@@ -868,6 +975,34 @@ QUERY_STOPWORDS = {
     "под",
     "при",
     "про",
+    "как",
+    "что",
+    "кто",
+    "какой",
+    "какая",
+    "какое",
+    "какие",
+    "когда",
+    "почему",
+    "где",
+    "чем",
+    "сколько",
+    "такое",
+    "был",
+    "была",
+    "было",
+    "были",
+    "бывает",
+    "бывают",
+    "изучает",
+    "изучают",
+    "отвечает",
+    "отвечают",
+    "отличить",
+    "расставлять",
+    "ставится",
+    "ставятся",
+    "устроено",
     "с",
     "со",
     "у",
@@ -964,6 +1099,67 @@ def _merge_candidates(*candidate_groups: list[RetrievalRow]) -> list[RetrievalRo
                 score=max(current.score, row.score),
             )
     return list(merged.values())
+
+
+def _cheap_prerank(candidates: list[RetrievalRow]) -> list[RetrievalRow]:
+    """Select the small cross-encoder pool using already-computed recall signals."""
+    return sorted(
+        candidates,
+        key=lambda row: (
+            0.45 * _clamp_score(row.rrf_score)
+            + 0.25 * _clamp_score(row.dense_score or row.score)
+            + 0.15 * _clamp_score(row.lexical_score)
+            + 0.10 * _clamp_score(row.document_score)
+            + 0.05 * _clamp_score(row.subject_score)
+        ),
+        reverse=True,
+    )
+
+
+def _balanced_prerank(
+    candidates: list[RetrievalRow],
+    *,
+    limit: int,
+    query_terms: list[str],
+) -> list[RetrievalRow]:
+    """Keep both semantic and lexical recall paths represented in the CPU rerank pool."""
+    if limit <= 0:
+        return []
+    combined = _cheap_prerank(candidates)
+    lexical = sorted(
+        (row for row in candidates if row.lexical_score > 0.0),
+        key=lambda row: (
+            lexical_overlap(
+                query_terms,
+                " ".join(
+                    str(value)
+                    for value in (
+                        row.text,
+                        (row.meta or {}).get("section_title"),
+                        " ".join(str(item) for item in ((row.meta or {}).get("section_path") or [])),
+                    )
+                    if value
+                ),
+            ),
+            row.lexical_score,
+            row.rrf_score,
+            row.dense_score,
+        ),
+        reverse=True,
+    )
+    selected: dict[str, RetrievalRow] = {}
+
+    def take(rows: list[RetrievalRow], count: int) -> None:
+        for row in rows:
+            if len(selected) >= count:
+                break
+            selected.setdefault(row.fragment_id, row)
+
+    combined_quota = max(1, (limit + 1) // 2)
+    take(combined, combined_quota)
+    take(lexical, limit)
+    take(combined, limit)
+    return list(selected.values())[:limit]
 
 
 def _top_scores(rows: list[RetrievalRow], *, limit: int = 5) -> list[float]:
@@ -1345,6 +1541,14 @@ def _phrase_window_matches(phrase: tuple[str, ...], window: list[str]) -> bool:
             if expected != actual:
                 return False
             continue
+        if expected in {"г", "год", "года", "году", "годы"} and actual in {
+            "г",
+            "год",
+            "года",
+            "году",
+            "годы",
+        }:
+            continue
         if not (_lexical_forms(expected) & _lexical_forms(actual)):
             return False
     return True
@@ -1428,7 +1632,7 @@ def _required_terms_for_scoring(query: str, query_analysis: dict[str, Any]) -> l
         terms = [str(term).strip().lower().replace("ё", "е") for term in analysis_terms if str(term).strip()]
         if terms:
             return terms
-    if query_analysis.get("query_type") != "concept_lookup":
+    if query_analysis.get("query_type") not in {"concept_lookup", "definition", "rule_lookup"}:
         return []
     if _required_exact_phrases_for_query(query):
         return []
@@ -1646,12 +1850,20 @@ def _is_valid_section_component(value: str) -> bool:
 def _metadata_with_inferred_section(row: RetrievalRow) -> dict[str, Any]:
     meta = dict(row.meta or {})
     section_details = infer_section_title_details(row.text or row.snippet or "", meta=meta)
-    section_title = section_details.get("section_title")
+    existing_section_title = meta.get("section_title")
+    if not isinstance(existing_section_title, str) or not _is_valid_section_component(existing_section_title):
+        existing_section_title = None
+    inferred_section_title = section_details.get("section_title")
+    section_title = existing_section_title or inferred_section_title
     section_path = section_details.get("section_path") or []
     meta["section_title"] = section_title
-    meta["inferred_section_title"] = section_title
+    meta["inferred_section_title"] = inferred_section_title
     meta["parent_heading"] = section_title
-    meta["section_title_reason"] = section_details.get("section_title_reason")
+    meta["section_title_reason"] = (
+        "meta:section_title"
+        if existing_section_title
+        else section_details.get("section_title_reason")
+    )
     meta["section_path"] = section_path
     chunk_source = str(meta.get("search_text") or row.text or row.snippet or "")
     chunk_details = detect_chunk_type_details(chunk_source, meta=meta, page=row.page)
@@ -1941,8 +2153,6 @@ def _apply_intent_scoring(
             term_penalty = True
             reasons.append(f"missing_required_terms:{','.join(missing_required_terms or [])}" if missing_required_terms else "missing_required_terms")
 
-        if term_penalty:
-            quality_penalty_value += settings.retrieval_concept_missing_term_penalty_value
         if normalized_chunk_type == "exercise":
             exercise_penalty_value = settings.retrieval_concept_exercise_penalty
             exercise_penalty = True
@@ -1961,6 +2171,11 @@ def _apply_intent_scoring(
         if low_text_quality:
             quality_penalty_value += 0.02
         quality_penalty_value = min(settings.retrieval_concept_quality_penalty_max, quality_penalty_value)
+        term_penalty_value = (
+            settings.retrieval_concept_missing_term_penalty_value
+            if term_penalty
+            else 0.0
+        )
 
         score_after_boosts_before_clamp = (
             score_before_boosts
@@ -1968,6 +2183,7 @@ def _apply_intent_scoring(
             + section_title_boost_value
             + schema_or_rule_boost_value
             - quality_penalty_value
+            - term_penalty_value
             - boundary_penalty_value
             - exercise_penalty_value
         )
@@ -2108,7 +2324,6 @@ def score_retrieval_candidates(
         row_for_scoring = replace(row, meta=meta)
         dense_score = _clamp_score(row.dense_score or row.score)
         lexical_score = _clamp_score(max(row.lexical_score, lexical_scores.get(row.fragment_id, 0.0)))
-        search_text = str(meta.get("search_text") or "")
         section_context = " ".join(
             str(value)
             for value in (
@@ -2118,7 +2333,9 @@ def score_retrieval_candidates(
             )
             if value
         )
-        lexical_text = f"{row.title or ''} {row.source_uri or ''} {section_context} {search_text} {row.text or ''}"
+        # Enriched search_text is useful for recall, but it contains document-wide
+        # keywords and must not be treated as evidence during final scoring.
+        lexical_text = f"{row.title or ''} {row.source_uri or ''} {section_context} {row.text or ''}"
         overlap = lexical_overlap(query_terms, lexical_text)
         raw_phrase_score = phrase_match_score(query, lexical_text)
         anchor_score = anchor_phrase_score(query, lexical_text)
@@ -2218,6 +2435,12 @@ def score_retrieval_candidates(
             has_anchor_phrases=bool(anchor_phrases),
             has_topic_units=bool(topic_units),
             required_exact_phrase_missing=bool(phrase_match.missing_required_modifiers),
+            hard_required_phrase_missing=bool(phrase_match.missing_required_modifiers)
+            and any(
+                phrase.kind == "abbreviation_phrase"
+                or any(any(char.isdigit() for char in token) for token in phrase.tokens)
+                for phrase in required_exact_phrases
+            ),
             wrong_entity_modifier=phrase_match.wrong_entity_modifier,
             is_toc=is_toc,
             document_score=document_score,
@@ -2347,6 +2570,7 @@ def _noise_rejection_reason(
     has_anchor_phrases: bool,
     has_topic_units: bool,
     required_exact_phrase_missing: bool,
+    hard_required_phrase_missing: bool,
     wrong_entity_modifier: bool,
     is_toc: bool,
     document_score: float,
@@ -2363,6 +2587,8 @@ def _noise_rejection_reason(
         return "wrong_entity_modifier"
     if is_toc and final_score < settings.default_min_score:
         return "table_of_contents"
+    if hard_required_phrase_missing and phrase_score <= 0.2:
+        return "missing_required_modifier"
     if (
         document_score < settings.retrieval_document_gate_min_score
         and lexical_component <= 0.0
@@ -2421,13 +2647,25 @@ def apply_adaptive_threshold(hits: list[RetrievalRow]) -> list[RetrievalRow]:
     top_score = ordered[0].final_score
     kept = [ordered[0]]
     for prev, current in zip(ordered, ordered[1:]):
+        anchor_signal = bool(
+            current.full_phrase_match
+            or current.required_term_score >= 0.8
+            or (current.phrase_score >= 0.9 and current.lexical_overlap >= 0.67)
+        )
+        semantic_anchor = anchor_signal and (
+            current.chunk_type not in {"exercise", "test_question", "navigation_index", "toc"}
+            or current.expanded_from_neighbors
+        )
+        if semantic_anchor:
+            kept.append(current)
+            continue
         if top_score > 0 and current.final_score < top_score * settings.retrieval_adaptive_relative_floor:
-            break
+            continue
         if (
             prev.final_score - current.final_score >= settings.retrieval_adaptive_gap
             and current.final_score < top_score * 0.75
         ):
-            break
+            continue
         kept.append(current)
     return kept
 

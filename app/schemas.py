@@ -1,11 +1,17 @@
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.config import settings
+
+
+CollectionName = Annotated[str, Field(min_length=1, max_length=settings.max_collection_chars)]
+SourceUri = Annotated[str, Field(min_length=1, max_length=settings.max_source_uri_chars)]
+
 
 class IngestRequest(BaseModel):
-    input_path: str
-    collection: str = "default"
+    input_path: str = Field(min_length=1, max_length=4096)
+    collection: CollectionName = "default"
     reindex: bool = False
 
 
@@ -16,11 +22,11 @@ class IngestResponse(BaseModel):
 
 
 class RetrieveRequest(BaseModel):
-    query: str = Field(min_length=1)
-    top_k: int = 12
-    min_score: float = 0.35
-    collection: str = "default"
-    source_uris: list[str] | None = None
+    query: str = Field(min_length=1, max_length=settings.max_query_chars)
+    top_k: int = Field(default=settings.default_top_k, ge=1, le=settings.max_top_k)
+    min_score: float = Field(default=settings.default_min_score, ge=0.0, le=1.0)
+    collection: CollectionName = "default"
+    source_uris: list[SourceUri] | None = Field(default=None, max_length=settings.max_source_uris)
     return_text: bool = False
     debug: bool = False
     include_toc: bool = False
@@ -108,18 +114,18 @@ class RetrieveResponse(BaseModel):
 
 
 class QueryRequest(BaseModel):
-    query: str = Field(min_length=1)
-    top_k: int = 10
-    min_score: float = 0.35
-    mode: str = "grounded"
-    citation_style: str = "fragments"
+    query: str = Field(min_length=1, max_length=settings.max_query_chars)
+    top_k: int = Field(default=10, ge=1, le=settings.max_top_k)
+    min_score: float = Field(default=settings.default_min_score, ge=0.0, le=1.0)
+    mode: Literal["grounded", "extractive"] = "grounded"
+    citation_style: Literal["fragments"] = "fragments"
     return_sources: bool = True
-    collection: str = "default"
-    source_uris: list[str] | None = None
+    collection: CollectionName = "default"
+    source_uris: list[SourceUri] | None = Field(default=None, max_length=settings.max_source_uris)
 
 
 class SourcesRequest(BaseModel):
-    collection: str = "default"
+    collection: CollectionName = "default"
 
 
 class SourceInfo(BaseModel):

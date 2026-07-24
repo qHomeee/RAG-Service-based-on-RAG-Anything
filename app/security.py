@@ -1,4 +1,5 @@
 import logging
+import hashlib
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -44,13 +45,18 @@ class RedisRateLimiter(RateLimiterBackend):
 
         self.limit_per_minute = limit_per_minute
         self._redis = redis.Redis.from_url(redis_url)
+        self._redis.ping()
 
     def check(self, key: str) -> None:
         bucket = int(time.time() // 60)
         redis_key = f"rag:rl:{key}:{bucket}"
-        count = self._redis.incr(redis_key)
-        if count == 1:
-            self._redis.expire(redis_key, 61)
+        try:
+            count = self._redis.incr(redis_key)
+            if count == 1:
+                self._redis.expire(redis_key, 61)
+        except Exception as exc:
+            logger.error("redis_rate_limiter_unavailable", extra={"error": str(exc)})
+            raise HTTPException(status_code=503, detail="Rate limiter unavailable") from exc
         if count > self.limit_per_minute:
             raise HTTPException(status_code=429, detail="Rate limit exceeded")
 
@@ -63,6 +69,8 @@ def create_rate_limiter() -> RateLimiterBackend:
             return limiter
         except Exception:
             logger.exception("redis_rate_limiter_init_failed")
+            if settings.app_env.lower() in {"prod", "production"} and settings.require_redis_in_production:
+                raise
 
     logger.info("rate_limiter_backend", extra={"backend": "in_memory"})
     return InMemoryRateLimiter(limit_per_minute=settings.rate_limit_per_minute)
@@ -72,5 +80,9 @@ rate_limiter: RateLimiterBackend = create_rate_limiter()
 
 
 def require_rate_limit(request: Request) -> None:
-    client = request.client.host if request.client else "unknown"
-    rate_limiter.check(client)
+    credential = request.headers.get("x-api-key") or request.headers.get("x-admin-api-key")
+    if credential:
+        client = hashlib.sha256(credential.encode("utf-8")).hexdigest()[:24]
+    else:
+        client = request.client.host if request.client else "unknown"
+    rate_limiter.check(f"{client}:{request.url.path}")
