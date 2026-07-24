@@ -1,0 +1,15 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.docker.example
+.venv
+.venv-mineru
+.pytest_cache
+**/__pycache__
+**/*.py[cod]
+storage/models
+storage/raw
+storage/parsed
+tests
+docs
