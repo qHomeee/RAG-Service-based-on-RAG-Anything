@@ -1,0 +1,282 @@
+[
+  {
+    "query": "Почему был убит Павел I?",
+    "expected_source": "1741086940_rossii_-sbornik-rasskazov_-9-klass_-danilov-a_-a_-2021.pdf",
+    "expected_pages": [5, 6, 7],
+    "expected_terms": ["павл", "убий", "заговор"]
+  },
+  {
+    "query": "Как прошло детство и юность М.М. Сперанского?",
+    "expected_source": "1741086940_rossii_-sbornik-rasskazov_-9-klass_-danilov-a_-a_-2021.pdf",
+    "expected_pages": [8, 9, 10],
+    "expected_terms": ["сперанск", "детств", "юност"]
+  },
+  {
+    "query": "Чем прославилась батарея генерала Раевского?",
+    "expected_source": "1741086940_rossii_-sbornik-rasskazov_-9-klass_-danilov-a_-a_-2021.pdf",
+    "expected_pages": [11, 12],
+    "expected_terms": ["батаре", "раевск"]
+  },
+  {
+    "query": "Что делал Александр I на Венском конгрессе?",
+    "expected_source": "1741086940_rossii_-sbornik-rasskazov_-9-klass_-danilov-a_-a_-2021.pdf",
+    "expected_pages": [13, 14],
+    "expected_terms": ["александр", "венск", "конгресс"]
+  },
+  {
+    "query": "Кем был Н.Н. Новосильцев?",
+    "expected_source": "1741086940_rossii_-sbornik-rasskazov_-9-klass_-danilov-a_-a_-2021.pdf",
+    "expected_pages": [15, 16],
+    "expected_terms": ["новосильцев"]
+  },
+  {
+    "query": "Как Аракчеев был связан с военными поселениями?",
+    "expected_source": "1741086940_rossii_-sbornik-rasskazov_-9-klass_-danilov-a_-a_-2021.pdf",
+    "expected_pages": [17, 18],
+    "expected_terms": ["аракчеев", "военн", "поселен"]
+  },
+  {
+    "query": "Какие первые тайные общества возникли в России?",
+    "expected_source": "1741086940_rossii_-sbornik-rasskazov_-9-klass_-danilov-a_-a_-2021.pdf",
+    "expected_pages": [19, 20, 21],
+    "expected_terms": ["тайн", "обществ"]
+  },
+  {
+    "query": "Кто такой А.Х. Бенкендорф?",
+    "expected_source": "1741086940_rossii_-sbornik-rasskazov_-9-klass_-danilov-a_-a_-2021.pdf",
+    "expected_pages": [22, 23, 24],
+    "expected_terms": ["бенкендорф"]
+  },
+  {
+    "query": "Как состоялась первая поездка на поезде в Царское Село?",
+    "expected_source": "1741086940_rossii_-sbornik-rasskazov_-9-klass_-danilov-a_-a_-2021.pdf",
+    "expected_pages": [25, 26],
+    "expected_terms": ["поезд", "царск", "сел"]
+  },
+  {
+    "query": "Чем занимался кружок Петрашевского?",
+    "expected_source": "1741086940_rossii_-sbornik-rasskazov_-9-klass_-danilov-a_-a_-2021.pdf",
+    "expected_pages": [27, 28],
+    "expected_terms": ["петрашевск", "круж"]
+  },
+  {
+    "query": "Что закрепил Адрианопольский мирный договор?",
+    "expected_source": "1741086940_rossii_-sbornik-rasskazov_-9-klass_-danilov-a_-a_-2021.pdf",
+    "expected_pages": [29, 30],
+    "expected_terms": ["адрианопол", "договор"]
+  },
+  {
+    "query": "Кто такой матрос Кошка?",
+    "expected_source": "1741086940_rossii_-sbornik-rasskazov_-9-klass_-danilov-a_-a_-2021.pdf",
+    "expected_pages": [31, 32],
+    "expected_terms": ["матрос", "кошк"]
+  },
+  {
+    "query": "Чем известен Царскосельский лицей?",
+    "expected_source": "1741086940_rossii_-sbornik-rasskazov_-9-klass_-danilov-a_-a_-2021.pdf",
+    "expected_pages": [33, 34],
+    "expected_terms": ["царскосельск", "лицей"]
+  },
+  {
+    "query": "Кто открыл Антарктиду?",
+    "expected_source": "1741086940_rossii_-sbornik-rasskazov_-9-klass_-danilov-a_-a_-2021.pdf",
+    "expected_pages": [35, 36, 37],
+    "expected_terms": ["антарктид", "откры"]
+  },
+  {
+    "query": "Как проходило московское чаепитие?",
+    "expected_source": "1741086940_rossii_-sbornik-rasskazov_-9-klass_-danilov-a_-a_-2021.pdf",
+    "expected_pages": [38, 39, 40],
+    "expected_terms": ["москов", "чаепит"]
+  },
+  {
+    "query": "Какие реформы проводил Н.А. Милютин?",
+    "expected_source": "1741086940_rossii_-sbornik-rasskazov_-9-klass_-danilov-a_-a_-2021.pdf",
+    "expected_pages": [41, 42],
+    "expected_terms": ["милютин", "реформ"]
+  },
+  {
+    "query": "Как появился суд присяжных в России?",
+    "expected_source": "1741086940_rossii_-sbornik-rasskazov_-9-klass_-danilov-a_-a_-2021.pdf",
+    "expected_pages": [43, 44],
+    "expected_terms": ["суд", "присяжн"]
+  },
+  {
+    "query": "Для чего были созданы высшие женские курсы В.И. Герье?",
+    "expected_source": "1741086940_rossii_-sbornik-rasskazov_-9-klass_-danilov-a_-a_-2021.pdf",
+    "expected_pages": [45, 46],
+    "expected_terms": ["женск", "курс", "герье"]
+  },
+  {
+    "query": "Что произошло при взятии аула Гуниб?",
+    "expected_source": "1741086940_rossii_-sbornik-rasskazov_-9-klass_-danilov-a_-a_-2021.pdf",
+    "expected_pages": [56, 57, 58],
+    "expected_terms": ["аул", "гуниб"]
+  },
+  {
+    "query": "Как проходила оборона Шипки?",
+    "expected_source": "1741086940_rossii_-sbornik-rasskazov_-9-klass_-danilov-a_-a_-2021.pdf",
+    "expected_pages": [59, 60, 61],
+    "expected_terms": ["оборон", "шипк"]
+  },
+  {
+    "query": "В чем международное значение русского языка?",
+    "expected_source": "Russkiy_yazyk_2019.pdf",
+    "expected_pages": [4, 5, 6, 7],
+    "expected_terms": ["международ", "русск", "язык"]
+  },
+  {
+    "query": "Что изучает фонетика?",
+    "expected_source": "Russkiy_yazyk_2019.pdf",
+    "expected_pages": [8, 167, 168, 169, 170, 171, 172],
+    "expected_terms": ["фонетик", "звук"]
+  },
+  {
+    "query": "Что изучают лексикология и фразеология?",
+    "expected_source": "Russkiy_yazyk_2019.pdf",
+    "expected_pages": [10, 11, 12, 13, 14, 172, 173],
+    "expected_terms": ["лексиколог", "фразеолог"]
+  },
+  {
+    "query": "Что такое морфема и словообразование?",
+    "expected_source": "Russkiy_yazyk_2019.pdf",
+    "expected_pages": [15, 16, 17, 181, 182],
+    "expected_terms": ["морфем", "словообразован"]
+  },
+  {
+    "query": "Какие части речи изучает морфология?",
+    "expected_source": "Russkiy_yazyk_2019.pdf",
+    "expected_pages": [18, 19, 20, 21, 22, 186, 187],
+    "expected_terms": ["морфолог", "част", "реч"]
+  },
+  {
+    "query": "Что изучает синтаксис словосочетания и простого предложения?",
+    "expected_source": "Russkiy_yazyk_2019.pdf",
+    "expected_pages": [23, 24, 25, 33, 34, 204, 205],
+    "expected_terms": ["синтаксис", "словосочетан", "предложен"]
+  },
+  {
+    "query": "Какие бывают основные виды сложных предложений?",
+    "expected_source": "Russkiy_yazyk_2019.pdf",
+    "expected_pages": [34, 35, 36, 37, 38, 39, 40],
+    "expected_terms": ["вид", "сложн", "предложен"]
+  },
+  {
+    "query": "Какие группы сложносочинённых предложений различают по союзам?",
+    "expected_source": "Russkiy_yazyk_2019.pdf",
+    "expected_pages": [41, 42, 43, 44, 45, 46, 47, 48],
+    "expected_terms": ["сложносочин", "союз"]
+  },
+  {
+    "query": "Как устроено сложноподчинённое предложение?",
+    "expected_source": "Russkiy_yazyk_2019.pdf",
+    "expected_pages": [54, 55, 56, 57, 58, 59],
+    "expected_terms": ["сложноподчин", "предложен"]
+  },
+  {
+    "query": "Как отличить придаточное определительное?",
+    "expected_source": "Russkiy_yazyk_2019.pdf",
+    "expected_pages": [60, 61, 62, 63, 64, 65, 66, 67, 68],
+    "expected_terms": ["придаточ", "определительн"]
+  },
+  {
+    "query": "На какие вопросы отвечает придаточное изъяснительное?",
+    "expected_source": "Russkiy_yazyk_2019.pdf",
+    "expected_pages": [69, 70, 71, 72, 73, 74],
+    "expected_terms": ["придаточ", "изъяснительн"]
+  },
+  {
+    "query": "Какие бывают придаточные обстоятельственные?",
+    "expected_source": "Russkiy_yazyk_2019.pdf",
+    "expected_pages": [75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104],
+    "expected_terms": ["придаточ", "обстоятельствен"]
+  },
+  {
+    "query": "Что такое придаточное присоединительное?",
+    "expected_source": "Russkiy_yazyk_2019.pdf",
+    "expected_pages": [105, 106, 107, 108, 109, 110, 111],
+    "expected_terms": ["придаточ", "присоединительн"]
+  },
+  {
+    "query": "Какая пунктуация используется в сложноподчинённых предложениях с несколькими придаточными?",
+    "expected_source": "Russkiy_yazyk_2019.pdf",
+    "expected_pages": [112, 113, 114, 115, 116, 117, 118, 119],
+    "expected_terms": ["сложноподчин", "придаточ", "пунктуац"]
+  },
+  {
+    "query": "Когда ставится запятая и точка с запятой в бессоюзном сложном предложении?",
+    "expected_source": "Russkiy_yazyk_2019.pdf",
+    "expected_pages": [123, 124],
+    "expected_terms": ["запят", "бессоюзн", "предложен"]
+  },
+  {
+    "query": "Когда ставится двоеточие в бессоюзном сложном предложении?",
+    "expected_source": "Russkiy_yazyk_2019.pdf",
+    "expected_pages": [125, 126, 127, 128, 129],
+    "expected_terms": ["двоеточ", "бессоюзн", "предложен"]
+  },
+  {
+    "query": "Когда ставится тире в бессоюзном сложном предложении?",
+    "expected_source": "Russkiy_yazyk_2019.pdf",
+    "expected_pages": [130, 131, 132, 133, 134, 135],
+    "expected_terms": ["тире", "бессоюзн", "предложен"]
+  },
+  {
+    "query": "Как оформлять сложные предложения с союзной и бессоюзной связью?",
+    "expected_source": "Russkiy_yazyk_2019.pdf",
+    "expected_pages": [139, 140, 141, 142, 143, 144, 145, 146],
+    "expected_terms": ["союзн", "бессоюзн", "связ"]
+  },
+  {
+    "query": "Что такое авторские знаки препинания?",
+    "expected_source": "Russkiy_yazyk_2019.pdf",
+    "expected_pages": [147, 148, 149],
+    "expected_terms": ["авторск", "знак", "препинан"]
+  },
+  {
+    "query": "Какова роль языка в жизни общества?",
+    "expected_source": "Russkiy_yazyk_2019.pdf",
+    "expected_pages": [150, 151, 152, 153, 154, 155, 156, 157, 158],
+    "expected_terms": ["роль", "язык", "обществ"]
+  },
+  {
+    "query": "Как решить квадратное уравнение через дискриминант?",
+    "is_negative": true
+  },
+  {
+    "query": "Как происходит фотосинтез у растений?",
+    "is_negative": true
+  },
+  {
+    "query": "Какие фазы проходит митоз клетки?",
+    "is_negative": true
+  },
+  {
+    "query": "Сформулируй закон Ома для участка цепи",
+    "is_negative": true
+  },
+  {
+    "query": "Как протекает реакция нейтрализации кислоты и основания?",
+    "is_negative": true
+  },
+  {
+    "query": "Как вычислить площадь равнобедренного треугольника?",
+    "is_negative": true
+  },
+  {
+    "query": "Что такое декоратор в Python?",
+    "is_negative": true
+  },
+  {
+    "query": "Как Kubernetes распределяет поды по узлам?",
+    "is_negative": true
+  },
+  {
+    "query": "Какие средства индивидуальной защиты применяют при чрезвычайной ситуации?",
+    "is_negative": true
+  },
+  {
+    "query": "Как рассчитывается индекс потребительских цен и инфляция?",
+    "is_negative": true
+  }
+]
