@@ -8,7 +8,14 @@ from app.main import _validate_secure_settings, app, get_service
 
 
 class FakeService:
-    def ingest(self, input_path: str, collection: str, reindex: bool):
+    def ingest(
+        self,
+        input_path: str,
+        collection: str,
+        reindex: bool,
+        *,
+        reparse: bool | None = None,
+    ):
         return {"indexed_docs": 0, "indexed_fragments": 0, "indexed_vectors": 0}
 
     def retrieve(

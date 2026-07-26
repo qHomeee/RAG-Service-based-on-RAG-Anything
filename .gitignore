@@ -6,4 +6,5 @@ __pycache__/
 storage/raw/
 storage/parsed/
 .env
+.env.docker
 storage/models/

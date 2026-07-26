@@ -23,7 +23,14 @@ class RagService:
         self.parser = parser
         self.repository = repository
 
-    def ingest(self, input_path: str, collection: str, reindex: bool) -> dict[str, int]:
+    def ingest(
+        self,
+        input_path: str,
+        collection: str,
+        reindex: bool,
+        *,
+        reparse: bool | None = None,
+    ) -> dict[str, int]:
         root = Path(input_path)
         files = [p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS]
         if len(files) > settings.max_ingest_files:
@@ -46,7 +53,12 @@ class RagService:
         fallback_docs = 0
         for file_path in files:
             source_uri = str(file_path.relative_to(root)).replace("\\", "/")
-            parsed, parse_mode = self.parser.parse_file_with_mode(source_uri=source_uri, path=file_path, reindex=reindex)
+            parser_reindex = reindex if reparse is None else reparse
+            parsed, parse_mode = self.parser.parse_file_with_mode(
+                source_uri=source_uri,
+                path=file_path,
+                reindex=parser_reindex,
+            )
             if settings.coalesce_parsed_elements_enabled:
                 parsed = coalesce_parsed_elements(parsed)
             if parse_mode == "fallback":

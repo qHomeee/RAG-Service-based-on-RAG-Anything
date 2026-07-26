@@ -55,3 +55,32 @@ def test_ingest_pipeline_uses_mineru_subprocess_output(tmp_path, monkeypatch):
     assert stats["indexed_fragments"] >= 1
     assert stats["indexed_vectors"] >= 1
     assert repo.docs[0][3]["parse_mode"] == "rag_anything"
+
+
+def test_reindex_can_reuse_successful_parse_artifacts(tmp_path, monkeypatch):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    sample = raw / "sample.pdf"
+    sample.write_bytes(b"%PDF-1.4")
+
+    parser = RAGAnythingParser()
+
+    def fake_run_mineru(path: Path, *, text_only: bool, reindex: bool = False):
+        assert reindex is False
+        return {"elements": [{"type": "text", "text": "Готовый результат MinerU", "page": 1}]}
+
+    monkeypatch.setattr("app.parser.check_mineru_env", lambda _py: (True, "ok"))
+    monkeypatch.setattr("app.parser.resolve_mineru_python", lambda: Path("python"))
+    monkeypatch.setattr(parser, "_run_mineru_subprocess", fake_run_mineru)
+
+    repo = _FakeRepo()
+    service = RagService(parser=parser, repository=repo)
+    stats = service.ingest(
+        str(raw),
+        collection="default",
+        reindex=True,
+        reparse=False,
+    )
+
+    assert stats["indexed_docs"] == 1
+    assert repo.docs[0][4] is True

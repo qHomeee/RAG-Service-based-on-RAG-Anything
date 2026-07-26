@@ -13,6 +13,7 @@ class IngestRequest(BaseModel):
     input_path: str = Field(min_length=1, max_length=4096)
     collection: CollectionName = "default"
     reindex: bool = False
+    reparse: bool | None = None
 
 
 class IngestResponse(BaseModel):

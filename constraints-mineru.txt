@@ -1,5 +1,6 @@
 mineru==2.0.6
 torch==2.11.0
+torchvision==0.26.0
 transformers==5.5.0
 ultralytics==8.4.33
 doclayout-yolo==0.0.4

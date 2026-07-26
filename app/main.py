@@ -110,19 +110,36 @@ def exclusive_ingest_lock(service: RagService):
         yield
         return
 
+    bind = db.get_bind()
+    if bind.dialect.name != "postgresql":
+        yield
+        return
+
     lock_id = 7_240_716_001
-    acquired = bool(
-        db.execute(text("SELECT pg_try_advisory_lock(:lock_id)"), {"lock_id": lock_id}).scalar()
-    )
-    if not acquired:
-        raise HTTPException(status_code=409, detail="Another ingest job is already running")
+    # Keep the session-level lock on a dedicated autocommit connection. Reusing
+    # the repository Session here leaves a transaction idle during long MinerU
+    # runs, so PostgreSQL eventually terminates it.
+    lock_connection = bind.connect().execution_options(isolation_level="AUTOCOMMIT")
     try:
+        acquired = bool(
+            lock_connection.execute(
+                text("SELECT pg_try_advisory_lock(:lock_id)"),
+                {"lock_id": lock_id},
+            ).scalar()
+        )
+        if not acquired:
+            raise HTTPException(status_code=409, detail="Another ingest job is already running")
         yield
     finally:
         try:
-            db.execute(text("SELECT pg_advisory_unlock(:lock_id)"), {"lock_id": lock_id})
+            lock_connection.execute(
+                text("SELECT pg_advisory_unlock(:lock_id)"),
+                {"lock_id": lock_id},
+            )
         except Exception:
             logger.exception("ingest_advisory_unlock_failed")
+        finally:
+            lock_connection.close()
 
 
 def _validate_ingest_path(input_path: str) -> None:
@@ -318,7 +335,12 @@ def prometheus_metrics() -> Response:
 def ingest(payload: IngestRequest, service: RagService = Depends(get_service)) -> IngestResponse:
     _validate_ingest_path(payload.input_path)
     with exclusive_ingest_lock(service):
-        stats = service.ingest(payload.input_path, payload.collection, payload.reindex)
+        stats = service.ingest(
+            payload.input_path,
+            payload.collection,
+            payload.reindex,
+            reparse=payload.reparse,
+        )
     return IngestResponse(**stats)
 
 

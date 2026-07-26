@@ -42,6 +42,7 @@ services:
       - ./storage/raw:/app/storage/raw:ro
       - ./storage/parsed:/app/storage/parsed
       - mineru_cache:/home/rag/.cache
+      - rapid_table_models:/opt/venvs/mineru/lib/python3.11/site-packages/rapid_table/models
     tmpfs:
       - /tmp:size=512m,uid=10001,gid=10001,mode=1770
     mem_limit: 10g
@@ -131,3 +132,4 @@ volumes:
   pgdata:
   redisdata:
   mineru_cache:
+  rapid_table_models:

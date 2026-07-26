@@ -29,6 +29,7 @@ RUN python -m venv /opt/venvs/mineru \
     && /opt/venvs/mineru/bin/pip install \
         --index-url https://download.pytorch.org/whl/cpu \
         torch==2.11.0 \
+        torchvision==0.26.0 \
     && /opt/venvs/mineru/bin/pip install \
         -r /tmp/requirements-mineru.txt \
         -c /tmp/constraints-mineru.txt
@@ -62,7 +63,12 @@ COPY --chown=rag:rag . /app
 
 RUN mkdir -p /app/storage/raw /app/storage/parsed /tmp/prometheus \
     && mkdir -p /home/rag/.cache \
-    && chown -R rag:rag /app/storage /tmp/prometheus /home/rag/.cache \
+    && mkdir -p /opt/venvs/mineru/lib/python3.11/site-packages/rapid_table/models \
+    && chown -R rag:rag \
+        /app/storage \
+        /tmp/prometheus \
+        /home/rag/.cache \
+        /opt/venvs/mineru/lib/python3.11/site-packages/rapid_table/models \
     && sed -i 's/\r$//' /app/scripts/docker-entrypoint.sh \
     && chmod 0755 /app/scripts/docker-entrypoint.sh
 

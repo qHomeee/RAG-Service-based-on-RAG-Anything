@@ -7,7 +7,14 @@ from app.main import app, get_service
 
 
 class FakeService:
-    def ingest(self, input_path: str, collection: str, reindex: bool):
+    def ingest(
+        self,
+        input_path: str,
+        collection: str,
+        reindex: bool,
+        *,
+        reparse: bool | None = None,
+    ):
         return {"indexed_docs": 1, "indexed_fragments": 2, "indexed_vectors": 3}
 
     def retrieve(

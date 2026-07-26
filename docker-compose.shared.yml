@@ -1,0 +1,40 @@
+services:
+  app:
+    mem_limit: 6g
+    cpus: 4.0
+    networks:
+      default: {}
+      presentonika_shared:
+        aliases:
+          - rag-service
+
+  migrate:
+    image: pgvector/pgvector:pg17
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1GB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - max_connections=20
+      - -c
+      - random_page_cost=1.1
+    mem_limit: 1536m
+    cpus: 1.25
+
+  redis:
+    mem_limit: 192m
+    cpus: 0.25
+
+networks:
+  presentonika_shared:
+    external: true
+    name: presentonika_shared
