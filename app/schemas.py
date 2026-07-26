@@ -76,6 +76,10 @@ class Hit(BaseModel):
     low_quality_filtered: bool = False
     low_text_quality_reason: str | None = None
     query_type: str = "unknown"
+    answer_focus: str = "none"
+    answer_alignment_score: float = 0.0
+    required_entities: list[str] = Field(default_factory=list)
+    required_entity_score: float = 1.0
     chunk_type: str = "unknown"
     chunk_type_reason: str | None = None
     section_title_reason: str | None = None
@@ -101,6 +105,8 @@ class Hit(BaseModel):
     concept_full_phrase_boost_value: float = 0.0
     section_title_boost_value: float = 0.0
     schema_or_rule_boost_value: float = 0.0
+    answer_alignment_boost_value: float = 0.0
+    entity_penalty_value: float = 0.0
     quality_penalty_value: float = 0.0
     boundary_penalty_value: float = 0.0
     exercise_penalty_value: float = 0.0

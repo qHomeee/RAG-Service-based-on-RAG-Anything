@@ -172,6 +172,14 @@ def test_query_understanding_detects_retrieval_intent(query, query_type):
     assert analyze_query(query)["query_type"] == query_type
 
 
+def test_query_understanding_detects_answer_focus_and_required_entities():
+    analysis = analyze_query("Какие цели преследовали реформы Танзимат в Османской империи?")
+
+    assert analysis["query_type"] == "explanation"
+    assert analysis["answer_focus"] == "goal"
+    assert analysis["required_entities"] == ["Танзимат", "Османской"]
+
+
 def test_query_understanding_detects_out_of_domain_school_subjects():
     assert analyze_query("Сформулируй закон Ома для электрической цепи")["primary_subject"] == "physics"
     assert analyze_query("Площадь равнобедренного треугольника")["primary_subject"] == "math"
@@ -1203,6 +1211,51 @@ def test_keyword_rerank_penalizes_irrelevant_hits_without_query_hardcode():
     assert reranked[0].fragment_id == "good"
     assert reranked[0].score > reranked[1].score
     assert all(0.0 <= hit.score <= 1.0 for hit in reranked)
+
+
+def test_goal_query_promotes_direct_answer_and_penalizes_missing_entity():
+    query = "Какие цели преследовали реформы Танзимат в Османской империи?"
+    direct = _row(
+        "direct",
+        0.78,
+        (
+            "Эпоха Танзимата началась в Османской империи. "
+            "Целью реформ стало укрепление центральной власти, успокоение Балкан "
+            "и ослабление зависимости от Европы."
+        ),
+    )
+    overview = _row(
+        "overview",
+        0.84,
+        (
+            "Реформы Танзимата в Османской империи проходили в XIX веке. "
+            + "Хроника событий и международных договоров. " * 40
+            + "Цель другого государства заключалась в расширении торговли."
+        ),
+    )
+    unrelated = _row(
+        "unrelated",
+        0.86,
+        "Целью политики Бисмарка было объединение германских земель и укрепление Пруссии.",
+    )
+
+    scored, rejected = score_retrieval_candidates(
+        query,
+        [overview, unrelated, direct],
+        rerank_raw_scores=[0.05, 0.0, 1.0],
+        apply_noise_filter=False,
+    )
+
+    assert not rejected
+    assert scored[0].fragment_id == "direct"
+    assert scored[0].answer_focus == "goal"
+    assert scored[0].answer_alignment_score > 0.0
+    assert scored[0].answer_alignment_boost_value > 0.0
+    assert scored[0].required_entity_score == 1.0
+    unrelated_hit = next(hit for hit in scored if hit.fragment_id == "unrelated")
+    assert unrelated_hit.entity_penalty_value > 0.0
+    assert "missing_required_entity_penalty" in unrelated_hit.penalties_applied
+    assert unrelated_hit.final_score < scored[0].final_score
 
 
 def test_anti_noise_filter_drops_zero_overlap_low_dense_candidates():

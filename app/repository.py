@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.chunking import split_to_subchunks
 from app.config import settings
 from app.document_intelligence import (
+    ANSWER_FOCUS_STEMS,
     analyze_query,
     cosine_similarity,
     detect_chunk_type,
@@ -78,6 +79,10 @@ class RetrievalRow:
     low_quality_filtered: bool = False
     low_text_quality_reason: str | None = None
     query_type: str = "unknown"
+    answer_focus: str = "none"
+    answer_alignment_score: float = 0.0
+    required_entities: list[str] = field(default_factory=list)
+    required_entity_score: float = 1.0
     chunk_type: str = "unknown"
     chunk_type_reason: str | None = None
     section_title_reason: str | None = None
@@ -103,6 +108,8 @@ class RetrievalRow:
     concept_full_phrase_boost_value: float = 0.0
     section_title_boost_value: float = 0.0
     schema_or_rule_boost_value: float = 0.0
+    answer_alignment_boost_value: float = 0.0
+    entity_penalty_value: float = 0.0
     quality_penalty_value: float = 0.0
     boundary_penalty_value: float = 0.0
     exercise_penalty_value: float = 0.0
@@ -283,7 +290,9 @@ class RagRepository:
         self.validate_embedding_compatibility(collection)
         normalized_query = normalize_query(query)
         query_terms = _query_terms_for_scoring(normalized_query)
-        query_analysis = analyze_query(normalized_query)
+        # Keep the user's original casing for proper-name extraction; analyze_query
+        # normalizes its lexical signals internally.
+        query_analysis = analyze_query(query)
         required_exact_phrases = _required_exact_phrases_for_query(normalized_query)
         expanded_queries = expand_query(
             normalized_query,
@@ -1626,6 +1635,92 @@ def lexical_overlap(query_terms: list[str], text_value: str) -> float:
     return matched / len(query_terms)
 
 
+ANSWER_CUE_STEMS: dict[str, tuple[str, ...]] = {
+    "goal": ("цел", "задач", "предназнач", "направлен", "стрем"),
+    "cause": ("причин", "обуслов", "вследств", "потому", "поскольку", "вызва", "связан"),
+    "consequence": ("последств", "результат", "итог", "привел", "стал", "вызва"),
+}
+
+
+def required_entity_match_score(required_entities: list[str], text_value: str) -> float:
+    if not required_entities:
+        return 1.0
+    text_tokens = _tokenize(text_value)
+    if not text_tokens:
+        return 0.0
+    matched = 0
+    for entity in required_entities:
+        entity_tokens = tuple(_tokenize(entity))
+        if entity_tokens and _unit_matches(entity_tokens, text_tokens):
+            matched += 1
+    return _clamp_score(matched / len(required_entities))
+
+
+def answer_focus_alignment_score(
+    query: str,
+    text_value: str,
+    query_analysis: dict[str, Any] | None = None,
+) -> float:
+    query_analysis = query_analysis or analyze_query(query)
+    focus = str(query_analysis.get("answer_focus") or "none")
+    cue_stems = ANSWER_CUE_STEMS.get(focus)
+    if not cue_stems:
+        return 0.0
+
+    text_tokens = _tokenize(text_value)
+    if not text_tokens:
+        return 0.0
+    cue_positions = [
+        idx
+        for idx, token in enumerate(text_tokens)
+        if any(token.startswith(stem) for stem in cue_stems)
+    ]
+    if not cue_positions:
+        return 0.0
+
+    intent_stems = ANSWER_FOCUS_STEMS.get(focus, ())
+    topic_terms = [
+        term
+        for term in _query_terms_for_scoring(query)
+        if not any(term.startswith(stem) for stem in intent_stems if "-" not in stem)
+    ]
+    if not topic_terms:
+        return 0.25
+
+    term_positions: list[list[int]] = []
+    for term in topic_terms:
+        term_forms = _lexical_forms(term)
+        positions = [
+            idx
+            for idx, token in enumerate(text_tokens)
+            if term_forms & _lexical_forms(token)
+        ]
+        if positions:
+            term_positions.append(positions)
+
+    if not term_positions:
+        return 0.0
+
+    denominator = min(2, len(topic_terms))
+    best = 0.0
+    for cue_idx in cue_positions:
+        proximity_weights: list[float] = []
+        for positions in term_positions:
+            distance = min(abs(cue_idx - position) for position in positions)
+            if distance <= 4:
+                proximity_weights.append(1.0)
+            elif distance <= 12:
+                proximity_weights.append(0.75)
+            elif distance <= 30:
+                proximity_weights.append(0.4)
+            elif distance <= 60:
+                proximity_weights.append(0.15)
+        proximity_weights.sort(reverse=True)
+        score = sum(proximity_weights[:denominator]) / denominator
+        best = max(best, score)
+    return _clamp_score(best)
+
+
 def _required_terms_for_scoring(query: str, query_analysis: dict[str, Any]) -> list[str]:
     analysis_terms = query_analysis.get("required_terms")
     if isinstance(analysis_terms, list):
@@ -1923,6 +2018,7 @@ def _penalties_applied(
     exercise_penalty_applied: bool = False,
     test_question_penalty_applied: bool = False,
     term_penalty_applied: bool = False,
+    missing_required_entity: bool = False,
 ) -> list[str]:
     penalties: list[str] = []
     if is_toc:
@@ -1939,6 +2035,8 @@ def _penalties_applied(
         penalties.append("test_question_intent_penalty")
     if term_penalty_applied:
         penalties.append("required_term_penalty")
+    if missing_required_entity:
+        penalties.append("missing_required_entity_penalty")
     if subject_confidence >= settings.retrieval_subject_confidence_threshold and subject_score <= settings.retrieval_subject_mismatch_score:
         penalties.append("subject_mismatch_penalty")
     return penalties
@@ -2109,6 +2207,9 @@ def _apply_intent_scoring(
     is_too_short: bool = False,
     low_text_quality: bool = False,
     boundary_penalty_value: float = 0.0,
+    answer_alignment_score: float = 0.0,
+    has_required_entities: bool = False,
+    required_entity_score: float = 1.0,
 ) -> tuple[float, bool, bool, bool, bool, bool, bool, bool, bool, bool, str, dict[str, float]]:
     normalized_query_type = query_type or "unknown"
     normalized_chunk_type = chunk_type or "unknown"
@@ -2126,6 +2227,27 @@ def _apply_intent_scoring(
     concept_full_phrase_boost_value = 0.0
     section_title_boost_value = 0.0
     schema_or_rule_boost_value = 0.0
+    answer_alignment_boost_value = (
+        settings.retrieval_answer_alignment_boost_value
+        * _clamp_score(answer_alignment_score)
+    )
+    entity_penalty_value = 0.0
+    if has_required_entities and required_entity_score <= 0.0:
+        entity_penalty_value = score_before_boosts * (
+            1.0 - settings.retrieval_missing_entity_score_multiplier
+        )
+        reasons.append("missing_required_entity")
+    elif has_required_entities and required_entity_score < 1.0:
+        entity_penalty_value = score_before_boosts * (1.0 - required_entity_score) * 0.15
+        reasons.append("partial_required_entity_match")
+    if answer_alignment_boost_value > 0:
+        intent_boost = True
+        reasons.append("answer_focus_alignment")
+    adjusted_score = _clamp_score(
+        score_before_boosts
+        + answer_alignment_boost_value
+        - entity_penalty_value
+    )
     quality_penalty_value = 0.0
     exercise_penalty_value = 0.0
 
@@ -2133,7 +2255,7 @@ def _apply_intent_scoring(
     required_term_ok = (not has_required_terms) or required_term_score >= 0.8
 
     if normalized_query_type == "concept_lookup":
-        boost_scale = max(0.0, 1.0 - score_before_boosts) * 1.2
+        boost_scale = max(0.0, 1.0 - adjusted_score) * 1.2
         if full_phrase_match:
             concept_full_phrase_boost_value = settings.retrieval_concept_full_phrase_boost_value * boost_scale
             reasons.append("concept_full_phrase_boost")
@@ -2178,7 +2300,7 @@ def _apply_intent_scoring(
         )
 
         score_after_boosts_before_clamp = (
-            score_before_boosts
+            adjusted_score
             + concept_full_phrase_boost_value
             + section_title_boost_value
             + schema_or_rule_boost_value
@@ -2197,6 +2319,8 @@ def _apply_intent_scoring(
             "concept_full_phrase_boost_value": concept_full_phrase_boost_value,
             "section_title_boost_value": section_title_boost_value,
             "schema_or_rule_boost_value": schema_or_rule_boost_value,
+            "answer_alignment_boost_value": answer_alignment_boost_value,
+            "entity_penalty_value": entity_penalty_value,
             "quality_penalty_value": quality_penalty_value,
             "boundary_penalty_value": boundary_penalty_value,
             "exercise_penalty_value": exercise_penalty_value,
@@ -2217,6 +2341,7 @@ def _apply_intent_scoring(
             score_debug,
         )
 
+    score = adjusted_score
     required_reference_boosted = False
     if normalized_query_type == "concept_lookup" and has_required_terms:
         if full_phrase_match and normalized_chunk_type in reference_chunk_types:
@@ -2291,6 +2416,8 @@ def _apply_intent_scoring(
             "concept_full_phrase_boost_value": 0.0,
             "section_title_boost_value": 0.0,
             "schema_or_rule_boost_value": 0.0,
+            "answer_alignment_boost_value": answer_alignment_boost_value,
+            "entity_penalty_value": entity_penalty_value,
             "quality_penalty_value": 0.0,
             "boundary_penalty_value": 0.0,
             "exercise_penalty_value": 0.0,
@@ -2313,6 +2440,13 @@ def score_retrieval_candidates(
     anchor_phrases = _anchor_phrases_for_query(query)
     required_exact_phrases = _required_exact_phrases_for_query(query)
     required_terms = _required_terms_for_scoring(query, query_analysis)
+    required_entities = [
+        str(entity).strip()
+        for entity in query_analysis.get("required_entities") or []
+        if str(entity).strip()
+    ]
+    answer_focus = str(query_analysis.get("answer_focus") or "none")
+    enforce_required_entities = bool(required_entities and answer_focus != "none")
     topic_units = _topic_units_for_query(query)
     lexical_scores = _bm25_scores(query_terms, candidates) if query_terms else {}
     rerank_scores = _normalize_rerank_scores(rerank_raw_scores, len(candidates))
@@ -2345,6 +2479,8 @@ def score_retrieval_candidates(
         required_term_text = _candidate_required_term_text(row, meta)
         required_term_match = required_term_match_score(required_terms, required_term_text)
         term_signals = required_term_signals(required_terms, required_term_text, required_term_match)
+        required_entity_score = required_entity_match_score(required_entities, lexical_text)
+        answer_alignment_score = answer_focus_alignment_score(query, lexical_text, query_analysis)
         phrase_score_before_penalty = _clamp_score(max(raw_phrase_score, weighted_match_score, section_score * 0.85))
         phrase_match = _phrase_modifier_match(required_exact_phrases, lexical_text, phrase_score_before_penalty)
         phrase_score = phrase_match.phrase_score_after_penalty
@@ -2420,6 +2556,9 @@ def score_retrieval_candidates(
             is_too_short=bool(quality.get("is_too_short")),
             low_text_quality=bool(quality.get("low_text_quality")),
             boundary_penalty_value=concept_boundary_penalty(required_terms, row.text or row.snippet or "", chunk_type=chunk_type),
+            answer_alignment_score=answer_alignment_score,
+            has_required_entities=enforce_required_entities,
+            required_entity_score=required_entity_score,
         )
         reason = _noise_rejection_reason(
             query_terms=query_terms,
@@ -2479,6 +2618,10 @@ def score_retrieval_candidates(
             low_text_quality=bool(quality.get("low_text_quality")),
             low_text_quality_reason=quality.get("low_text_quality_reason"),
             query_type=str(query_analysis.get("query_type") or "unknown"),
+            answer_focus=answer_focus,
+            answer_alignment_score=answer_alignment_score,
+            required_entities=required_entities,
+            required_entity_score=required_entity_score,
             chunk_type=chunk_type,
             chunk_type_reason=quality.get("chunk_type_reason") or meta.get("chunk_type_reason"),
             section_title_reason=meta.get("section_title_reason"),
@@ -2503,6 +2646,8 @@ def score_retrieval_candidates(
             concept_full_phrase_boost_value=float(score_adjustments["concept_full_phrase_boost_value"]),
             section_title_boost_value=float(score_adjustments["section_title_boost_value"]),
             schema_or_rule_boost_value=float(score_adjustments["schema_or_rule_boost_value"]),
+            answer_alignment_boost_value=float(score_adjustments["answer_alignment_boost_value"]),
+            entity_penalty_value=float(score_adjustments["entity_penalty_value"]),
             quality_penalty_value=float(score_adjustments["quality_penalty_value"]),
             boundary_penalty_value=float(score_adjustments["boundary_penalty_value"]),
             exercise_penalty_value=float(score_adjustments["exercise_penalty_value"]),
@@ -2517,6 +2662,7 @@ def score_retrieval_candidates(
                 exercise_penalty_applied=exercise_penalty_applied,
                 test_question_penalty_applied=test_question_penalty_applied,
                 term_penalty_applied=term_penalty_applied,
+                missing_required_entity=bool(enforce_required_entities and required_entity_score <= 0.0),
             ),
         )
         if apply_noise_filter and reason:
@@ -2770,6 +2916,10 @@ def _debug_hit(hit: RetrievalRow) -> dict[str, Any]:
         "low_quality_filtered": hit.low_quality_filtered,
         "low_text_quality_reason": hit.low_text_quality_reason,
         "query_type": hit.query_type,
+        "answer_focus": hit.answer_focus,
+        "answer_alignment_score": round(hit.answer_alignment_score, 4),
+        "required_entities": hit.required_entities,
+        "required_entity_score": round(hit.required_entity_score, 4),
         "chunk_type": hit.chunk_type,
         "chunk_type_reason": hit.chunk_type_reason,
         "section_title_reason": hit.section_title_reason,
@@ -2794,6 +2944,8 @@ def _debug_hit(hit: RetrievalRow) -> dict[str, Any]:
         "concept_full_phrase_boost_value": round(hit.concept_full_phrase_boost_value, 4),
         "section_title_boost_value": round(hit.section_title_boost_value, 4),
         "schema_or_rule_boost_value": round(hit.schema_or_rule_boost_value, 4),
+        "answer_alignment_boost_value": round(hit.answer_alignment_boost_value, 4),
+        "entity_penalty_value": round(hit.entity_penalty_value, 4),
         "quality_penalty_value": round(hit.quality_penalty_value, 4),
         "boundary_penalty_value": round(hit.boundary_penalty_value, 4),
         "exercise_penalty_value": round(hit.exercise_penalty_value, 4),

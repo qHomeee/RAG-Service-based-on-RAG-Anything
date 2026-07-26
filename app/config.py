@@ -209,7 +209,7 @@ class Settings(BaseSettings):
     retrieval_subject_weight: float = 0.1
     retrieval_document_weight: float = 0.1
     retrieval_quality_weight: float = 0.05
-    retrieval_rerank_weight: float = 0.05
+    retrieval_rerank_weight: float = 0.15
     retrieval_rrf_weight: float = 0.05
     retrieval_rrf_k: int = 60
     retrieval_noise_dense_floor: float = 0.72
@@ -235,6 +235,8 @@ class Settings(BaseSettings):
     retrieval_concept_missing_term_penalty_value: float = 0.3
     retrieval_concept_quality_penalty_max: float = 0.12
     retrieval_concept_boundary_penalty_value: float = 0.08
+    retrieval_answer_alignment_boost_value: float = 0.14
+    retrieval_missing_entity_score_multiplier: float = 0.5
     retrieval_exercise_penalty: float = 0.55
     retrieval_test_question_penalty: float = 0.35
     retrieval_concept_exercise_penalty: float = 0.25

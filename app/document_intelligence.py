@@ -124,6 +124,36 @@ RULE_LOOKUP_TERMS = {
 
 EXPLANATION_TERMS = {"почему", "как", "объясни", "объяснить", "объясните", "расскажи", "рассказать"}
 
+ANSWER_FOCUS_STEMS: dict[str, tuple[str, ...]] = {
+    "goal": ("цел", "задач", "предназнач", "направлен", "преслед"),
+    "cause": ("причин", "почему", "обуслов", "вследств", "из-за"),
+    "consequence": ("последств", "результат", "итог", "привел", "привёл"),
+}
+
+QUERY_INITIAL_NON_ENTITIES = {
+    "в",
+    "для",
+    "как",
+    "какая",
+    "какие",
+    "какой",
+    "когда",
+    "кто",
+    "почему",
+    "расскажи",
+    "назови",
+    "объясни",
+    "опиши",
+    "перечисли",
+    "покажи",
+    "приведи",
+    "сравни",
+    "сравните",
+    "сформулируй",
+    "что",
+    "чем",
+}
+
 EXERCISE_COMMANDS = {
     "выполните",
     "выполнить",
@@ -235,14 +265,17 @@ def analyze_query(query: str) -> dict[str, Any]:
     primary_subject = detected_subjects[0]["subject"] if detected_subjects else "unknown"
     subject_confidence = detected_subjects[0]["confidence"] if detected_subjects else 0.0
     query_type = detect_query_type(normalized, primary_subject)
+    answer_focus = detect_answer_focus(normalized)
     return {
         "normalized_query": normalized,
         "detected_subjects": detected_subjects,
         "primary_subject": primary_subject,
         "subject_confidence": subject_confidence,
         "query_type": query_type,
+        "answer_focus": answer_focus,
         "key_terms": tokens,
         "named_entities": extract_named_entities(query),
+        "required_entities": extract_required_entities(query),
         "phrases": [" ".join(item) for item in phrases],
         "exact_phrases": exact_phrases,
         "required_terms": _required_multiword_terms(normalized, query_type=query_type, exact_phrases=exact_phrases),
@@ -281,6 +314,8 @@ def detect_query_type(normalized_query: str, primary_subject: str) -> str:
         return "problem_solving"
     if tokens & RULE_LOOKUP_TERMS:
         return "rule_lookup"
+    if detect_answer_focus(normalized_query) != "none":
+        return "explanation"
     if tokens & EXPLANATION_TERMS:
         return "explanation"
     if tokens & {"что", "такое", "определение"}:
@@ -290,6 +325,24 @@ def detect_query_type(normalized_query: str, primary_subject: str) -> str:
     if primary_subject == "russian_language" and tokens & {"причастие", "причастиях", "деепричастие", "разбор"}:
         return "rule_lookup"
     return "unknown"
+
+
+def detect_answer_focus(normalized_query: str) -> str:
+    tokens = tokenize(normalized_query)
+    normalized = normalize_for_matching(normalized_query)
+    for focus, stems in ANSWER_FOCUS_STEMS.items():
+        if any(
+            token.startswith(stem)
+            for token in tokens
+            for stem in stems
+            if "-" not in stem
+        ):
+            return focus
+        if any(stem in normalized for stem in stems if "-" in stem):
+            return focus
+    if "для чего" in normalized or "с какой целью" in normalized:
+        return "goal"
+    return "none"
 
 
 def extract_named_entities(query: str) -> list[str]:
@@ -307,6 +360,28 @@ def extract_named_entities(query: str) -> list[str]:
         if key not in seen:
             entities.append(value)
             seen.add(key)
+    return entities
+
+
+def extract_required_entities(query: str) -> list[str]:
+    entities: list[str] = []
+    seen: set[str] = set()
+    pattern = re.compile(r"\b[А-ЯЁ][а-яё]+(?:\s+[IVXLCDM]+|\s+\d+)?|\b[А-ЯЁA-Z]{2,}\b")
+    for match in pattern.finditer(query or ""):
+        value = match.group(0).strip()
+        normalized = value.lower().replace("ё", "е")
+        tokens = tokenize(value)
+        if not tokens:
+            continue
+        first = tokens[0]
+        has_modifier = any(token.isdigit() or bool(_ROMAN_RE.fullmatch(token)) for token in tokens[1:])
+        is_acronym = value.isupper() and len(value) >= 2
+        if first in QUERY_INITIAL_NON_ENTITIES:
+            continue
+        if normalized in seen:
+            continue
+        entities.append(value)
+        seen.add(normalized)
     return entities
 
 

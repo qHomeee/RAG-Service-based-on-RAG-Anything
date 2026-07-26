@@ -51,6 +51,10 @@ class _FakeRepository:
                 low_text_quality=False,
                 low_text_quality_reason=None,
                 query_type="concept_lookup",
+                answer_focus="goal",
+                answer_alignment_score=0.9,
+                required_entities=["query"],
+                required_entity_score=1.0,
                 chunk_type="explanatory",
                 chunk_type_reason="connected_prose",
                 section_title_reason="meta:section_title",
@@ -76,6 +80,8 @@ class _FakeRepository:
                 concept_full_phrase_boost_value=0.05,
                 section_title_boost_value=0.02,
                 schema_or_rule_boost_value=0.03,
+                answer_alignment_boost_value=0.1,
+                entity_penalty_value=0.0,
                 quality_penalty_value=0.0,
                 boundary_penalty_value=0.0,
                 exercise_penalty_value=0.0,
@@ -115,6 +121,10 @@ def test_retrieve_returns_full_fragment_in_snippet_field():
     assert hits[0]["low_text_quality"] is False
     assert hits[0]["low_text_quality_reason"] is None
     assert hits[0]["query_type"] == "concept_lookup"
+    assert hits[0]["answer_focus"] == "goal"
+    assert hits[0]["answer_alignment_score"] == 0.9
+    assert hits[0]["required_entities"] == ["query"]
+    assert hits[0]["required_entity_score"] == 1.0
     assert hits[0]["chunk_type"] == "explanatory"
     assert hits[0]["chunk_type_reason"] == "connected_prose"
     assert hits[0]["section_title_reason"] == "meta:section_title"
@@ -140,6 +150,8 @@ def test_retrieve_returns_full_fragment_in_snippet_field():
     assert hits[0]["concept_full_phrase_boost_value"] == 0.05
     assert hits[0]["section_title_boost_value"] == 0.02
     assert hits[0]["schema_or_rule_boost_value"] == 0.03
+    assert hits[0]["answer_alignment_boost_value"] == 0.1
+    assert hits[0]["entity_penalty_value"] == 0.0
     assert hits[0]["quality_penalty_value"] == 0.0
     assert hits[0]["boundary_penalty_value"] == 0.0
     assert hits[0]["exercise_penalty_value"] == 0.0
