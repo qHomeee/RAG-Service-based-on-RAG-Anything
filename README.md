@@ -290,7 +290,7 @@ default). To enable the included daily 03:17 UTC schedule:
 
 ```bash
 sudo install -m 0644 deploy/rag-service-backup.cron /etc/cron.d/rag-service-backup
-sudo systemctl reload cron
+sudo systemctl is-active cron
 ```
 
 If cross-encoder fails to load, logs include `cross_encoder_unavailable`, and `/readyz` reports:
