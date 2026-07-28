@@ -1,0 +1,4 @@
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+17 3 * * * root cd /opt/presentonika/RAG-Service-v2 && RAG_BACKUP_RETENTION_DAYS=14 ./scripts/backup-postgres.sh >> /var/log/rag-service-backup.log 2>&1

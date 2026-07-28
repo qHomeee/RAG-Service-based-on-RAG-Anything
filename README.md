@@ -275,6 +275,24 @@ to additionally receive:
 
 Do not treat legacy `snippet` as the exact target fragment.
 
+### PostgreSQL backups on VPS
+
+Create and validate a logical backup after every reindex:
+
+```bash
+./scripts/backup-postgres.sh
+pg_restore --list /root/rag-backups/rag-logical-*.dump >/dev/null
+```
+
+The script writes a custom-format `pg_dump`, a SHA-256 sidecar and removes only
+`rag-logical-*` backup files older than `RAG_BACKUP_RETENTION_DAYS` (14 by
+default). To enable the included daily 03:17 UTC schedule:
+
+```bash
+sudo install -m 0644 deploy/rag-service-backup.cron /etc/cron.d/rag-service-backup
+sudo systemctl reload cron
+```
+
 If cross-encoder fails to load, logs include `cross_encoder_unavailable`, and `/readyz` reports:
 - `checks.reranker_loaded`
 - `checks.reranker_model`
