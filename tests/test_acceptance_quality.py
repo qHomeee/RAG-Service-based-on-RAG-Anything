@@ -46,3 +46,22 @@ def test_acceptance_eval_scores_evidence_rank_and_negative_abstention():
     assert report["mean_reciprocal_rank"] == 0.5
     assert report["top1_source_accuracy"] == 0.0
     assert report["negative_abstention_rate"] == 1.0
+
+
+def test_acceptance_eval_treats_pages_as_strict_labels():
+    report = run_acceptance_eval(
+        repository=FakeRepository(),
+        eval_set=[
+            {
+                "query": "Что изучает фонетика?",
+                "expected_source": "book.pdf",
+                "expected_pages": [11],
+                "expected_terms": ["фонетик", "звук"],
+            }
+        ],
+        collection="default",
+        top_k=3,
+        min_score=0.2,
+    )
+
+    assert report["evidence_recall_at_k"] == 0.0

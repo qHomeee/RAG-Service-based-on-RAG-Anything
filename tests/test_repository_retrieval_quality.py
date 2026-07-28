@@ -20,6 +20,7 @@ from app.repository import (
     _normalize_rerank_scores,
     _metadata_with_inferred_section,
     _query_terms_for_scoring,
+    answer_focus_alignment_score,
     apply_adaptive_threshold,
     anchor_phrase_score,
     document_level_scores,
@@ -180,6 +181,86 @@ def test_query_understanding_detects_answer_focus_and_required_entities():
     assert analysis["required_entities"] == ["Танзимат", "Османской"]
 
 
+def test_query_understanding_does_not_treat_kakovy_as_an_entity():
+    analysis = analyze_query("Каковы причины Младотурецкой революции 1908 года?")
+
+    assert analysis["named_entities"] == ["Младотурецкой"]
+    assert analysis["required_entities"] == ["Младотурецкой"]
+
+
+def test_query_understanding_recognizes_implicit_goal_wording():
+    analysis = analyze_query("Кто такие младотурки и чего они добивались?")
+
+    assert analysis["query_type"] == "explanation"
+    assert analysis["answer_focus"] == "goal"
+
+
+def test_cause_alignment_does_not_reward_reversed_consequence():
+    query = "Каковы причины революции 1908 года?"
+
+    cause = answer_focus_alignment_score(
+        query,
+        "Глубокий кризис и недовольство стали предпосылками революции 1908 года.",
+    )
+    consequence = answer_focus_alignment_score(
+        query,
+        "Революция 1908 года вызвала международный кризис.",
+    )
+
+    assert cause > 0.5
+    assert consequence == 0.0
+
+
+def test_cause_alignment_recognizes_explanatory_historical_prose():
+    query = "Почему Османская империя ослабла к середине XIX века?"
+
+    direct = answer_focus_alignment_score(
+        query,
+        (
+            "Положение осложняли поражения Османской империи и нежелание элиты "
+            "модернизировать государство к середине XIX века."
+        ),
+    )
+    partial = answer_focus_alignment_score(
+        query,
+        "К середине XIX века движение на Балканах всё больше ослабляло Турцию.",
+    )
+
+    assert direct > partial
+
+
+def test_final_scoring_does_not_treat_neighbor_context_as_target_evidence():
+    query = "Какие цели преследовали реформы Танзимат?"
+    leaked = _row(
+        "neighbor-leak",
+        0.9,
+        "Соседний фрагмент: целью реформ Танзимата было укрепление власти.",
+    )
+    leaked.fragment_text = "Справочная хронология событий."
+    leaked.expanded_from_neighbors = True
+    leaked.meta = {
+        "expanded_text": leaked.text,
+        "expanded_from_neighbors": True,
+    }
+    exact = _row(
+        "exact",
+        0.7,
+        "Целью реформ Танзимата было укрепление центральной власти.",
+    )
+
+    scored, _ = score_retrieval_candidates(
+        query,
+        [leaked, exact],
+        rerank_raw_scores=[0.5, 0.5],
+        apply_noise_filter=False,
+    )
+    by_id = {hit.fragment_id: hit for hit in scored}
+
+    assert by_id["neighbor-leak"].required_entity_score == 0.0
+    assert by_id["neighbor-leak"].answer_alignment_score == 0.0
+    assert scored[0].fragment_id == "exact"
+
+
 def test_query_understanding_detects_out_of_domain_school_subjects():
     assert analyze_query("Сформулируй закон Ома для электрической цепи")["primary_subject"] == "physics"
     assert analyze_query("Площадь равнобедренного треугольника")["primary_subject"] == "math"
@@ -235,6 +316,13 @@ def test_retrieve_does_not_remove_filter_when_document_router_rejects_everything
             "§ 21. Русский литературный язык и его стили 159",
             "navigation_index",
         ),
+        (
+            "Османская империя и Иран. В чём причина революций начала XX в.? "
+            "• Танзимат • садразам • бабизм • Большая игра "
+            "1839 г. — начало Танзимата 1908 г. — Младотурецкая революция "
+            "1905—1911 гг. — Конституционная революция в Иране",
+            "navigation_index",
+        ),
         ("Порядок морфологического разбора имени существительного. I. Часть речи. II. Морфологические признаки. III. Синтаксическая роль.", "schema_or_plan"),
         ("Квадратное уравнение - это уравнение вида ax2 + bx + c = 0.", "definition"),
         ("Правило: в полных причастиях пишется НН при наличии приставки.", "rule"),
@@ -243,6 +331,29 @@ def test_retrieve_does_not_remove_filter_when_document_router_rejects_everything
 )
 def test_chunk_type_detection_is_intent_aware(text, chunk_type):
     assert detect_chunk_type(text) == chunk_type
+
+
+def test_runtime_navigation_detection_overrides_stale_index_metadata():
+    row = _row(
+        "chapter-opener",
+        0.9,
+        (
+            "Османская империя и Иран. В чём причина революций начала XX в.? "
+            "• Танзимат • садразам • бабизм • Большая игра "
+            "1839 г. — начало Танзимата 1908 г. — Младотурецкая революция "
+            "1905—1911 гг. — Конституционная революция в Иране"
+        ),
+    )
+    row.meta = {"chunk_type": "rule", "chunk_type_reason": "stale_index_value"}
+
+    scored, _ = score_retrieval_candidates(
+        "Почему Османская империя ослабла?",
+        [row],
+        apply_noise_filter=False,
+    )
+
+    assert scored[0].chunk_type == "navigation_index"
+    assert scored[0].is_navigation_index is True
 
 
 def test_numbered_definition_examples_are_not_misclassified_as_exercise():
@@ -412,6 +523,38 @@ def test_year_phrase_accepts_common_russian_abbreviation():
 
     assert rejected == []
     assert scored[0].matched_phrases == ["война 1812 года"]
+
+
+def test_year_phrase_accepts_nearby_caption_layout_but_keeps_year_required():
+    query = "Каковы причины Младотурецкой революции 1908 года?"
+    scored, _ = score_retrieval_candidates(
+        query,
+        [
+            _row(
+                "relevant",
+                0.75,
+                (
+                    "Оппозиционное движение возглавили младотурки. "
+                    "Младотурецкая революция. Литография С. Христидиса. 1908 г."
+                ),
+                "history.pdf",
+            ),
+            _row(
+                "wrong-year",
+                0.9,
+                "Младотурецкая революция завершилась в 1909 г.",
+                "history.pdf",
+            ),
+        ],
+        rerank_raw_scores=[1.0, 0.4],
+        apply_noise_filter=False,
+    )
+    by_id = {hit.fragment_id: hit for hit in scored}
+
+    assert by_id["relevant"].matched_phrases == ["революции 1908 года"]
+    assert by_id["relevant"].missing_required_modifiers == []
+    assert by_id["wrong-year"].missing_required_modifiers == ["революции 1908 года"]
+    assert scored[0].fragment_id == "relevant"
 
 
 def test_wrong_entity_modifier_is_rejected_from_alexander_i_top8():

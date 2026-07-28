@@ -1,0 +1,68 @@
+[
+  {
+    "query": "Какие цели преследовали реформы Танзимат в Османской империи?",
+    "expected_source": "4abe9b1fab_vseobschaja_istorija_9_klass_v_r_medinskij_2025_g_.pdf",
+    "expected_pages": [215],
+    "expected_terms": ["цель", "реформ"]
+  },
+  {
+    "query": "Какие положения провозгласил Гюльханейский хатт-и шериф?",
+    "expected_source": "4abe9b1fab_vseobschaja_istorija_9_klass_v_r_medinskij_2025_g_.pdf",
+    "expected_pages": [215, 216],
+    "expected_terms": ["гюльханей", "шериф"]
+  },
+  {
+    "query": "Почему Османская империя ослабла к середине XIX века?",
+    "expected_source": "4abe9b1fab_vseobschaja_istorija_9_klass_v_r_medinskij_2025_g_.pdf",
+    "expected_pages": [214, 215],
+    "expected_terms": ["осман", "ослаб"]
+  },
+  {
+    "query": "Каковы последствия колониальной политики стран Запада?",
+    "expected_source": "4abe9b1fab_vseobschaja_istorija_9_klass_v_r_medinskij_2025_g_.pdf",
+    "expected_pages": [265, 268],
+    "expected_terms": ["колони", "запад"]
+  },
+  {
+    "query": "Каковы причины Младотурецкой революции 1908 года?",
+    "expected_source": "4abe9b1fab_vseobschaja_istorija_9_klass_v_r_medinskij_2025_g_.pdf",
+    "expected_pages": [218, 219],
+    "expected_terms": ["младотур", "оппозиц"]
+  },
+  {
+    "query": "Кто такие младотурки и чего они добивались?",
+    "expected_source": "4abe9b1fab_vseobschaja_istorija_9_klass_v_r_medinskij_2025_g_.pdf",
+    "expected_pages": [219],
+    "expected_terms": ["младотур", "конституц"]
+  },
+  {
+    "query": "Какие последствия имела Младотурецкая революция?",
+    "expected_source": "4abe9b1fab_vseobschaja_istorija_9_klass_v_r_medinskij_2025_g_.pdf",
+    "expected_pages": [197, 219],
+    "expected_terms": ["младотур", "революц"]
+  },
+  {
+    "query": "Почему 1878 год стал поворотным для Османской империи?",
+    "expected_source": "4abe9b1fab_vseobschaja_istorija_9_klass_v_r_medinskij_2025_g_.pdf",
+    "expected_pages": [217, 218],
+    "expected_terms": ["1878", "осман"]
+  },
+  {
+    "query": "Какие причины проведения преобразований эпохи Танзимат можно назвать?",
+    "expected_source": "4abe9b1fab_vseobschaja_istorija_9_klass_v_r_medinskij_2025_g_.pdf",
+    "expected_pages": [214, 215],
+    "expected_terms": ["танзимат", "реформ"]
+  },
+  {
+    "query": "Как настроить Kubernetes Ingress в production-кластере?",
+    "is_negative": true
+  },
+  {
+    "query": "Как написать Terraform-модуль для AWS VPC?",
+    "is_negative": true
+  },
+  {
+    "query": "Какая рекомендуемая дозировка антибиотика при пневмонии?",
+    "is_negative": true
+  }
+]

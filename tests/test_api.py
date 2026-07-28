@@ -28,6 +28,7 @@ class FakeService:
         include_toc: bool = False,
         include_low_quality: bool = False,
         include_navigation: bool = False,
+        return_context: bool = False,
     ):
         return [
             {
@@ -39,6 +40,19 @@ class FakeService:
                 "snippet": "Inflation is sustained rise in price level.",
                 "score": 0.9,
                 "text": "Inflation is sustained rise in price level." if return_text else None,
+                "context_text": "Context around inflation." if return_context else None,
+                "context_fragments": (
+                    [
+                        {
+                            "fragment_id": "frag-1",
+                            "page": None,
+                            "element_index": 1,
+                            "text": "Inflation is sustained rise in price level.",
+                        }
+                    ]
+                    if return_context
+                    else []
+                ),
                 "dense_score": 0.8,
                 "lexical_score": 0.7,
                 "phrase_score": 0.6,
@@ -114,6 +128,7 @@ class FakeService:
         include_toc: bool = False,
         include_low_quality: bool = False,
         include_navigation: bool = False,
+        return_context: bool = False,
     ):
         hits = self.retrieve(
             query,
@@ -125,6 +140,7 @@ class FakeService:
             include_toc=include_toc,
             include_low_quality=include_low_quality,
             include_navigation=include_navigation,
+            return_context=return_context,
         )
         return hits, {
             "query": query,
@@ -281,6 +297,29 @@ def test_retrieve_endpoint_with_source_filter():
     assert response.status_code == 200
     body = response.json()
     assert body["hits"][0]["source_uri"] == "textbooks/russian.pdf"
+
+
+def test_retrieve_endpoint_can_return_exact_text_and_structured_context():
+    client = _client()
+    response = client.post(
+        "/retrieve",
+        headers={"X-API-Key": settings.api_key},
+        json={
+            "query": "inflation",
+            "top_k": 1,
+            "min_score": 0.2,
+            "collection": "default",
+            "return_text": True,
+            "return_context": True,
+        },
+    )
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    hit = response.json()["hits"][0]
+    assert hit["text"] == "Inflation is sustained rise in price level."
+    assert hit["context_text"] == "Context around inflation."
+    assert hit["context_fragments"][0]["fragment_id"] == "frag-1"
 
 
 def test_retrieve_endpoint_debug_returns_component_scores_and_rejections():

@@ -49,3 +49,52 @@ def test_expand_query_uses_domain_specific_dictionary():
         assert any("фискальный сбор" in item for item in variants)
     finally:
         settings.query_synonyms_by_domain = original
+
+
+def test_expand_query_adds_answer_focused_variant_for_long_causal_question():
+    variants = expand_query(
+        "каковы причины младотурецкой революции 1908 года",
+        query_analysis={
+            "answer_focus": "cause",
+            "primary_subject": "history",
+            "detected_subjects": [],
+        },
+    )
+
+    assert len(variants) >= 2
+    assert any(
+        "младотурецкой" in variant
+        and "кризис" in variant
+        and "оппозиция" in variant
+        and "1908" not in variant
+        for variant in variants[1:]
+    )
+
+
+def test_expand_query_adds_consequence_cues_without_auxiliary_verb():
+    variants = expand_query(
+        "какие последствия имела младотурецкая революция",
+        query_analysis={
+            "answer_focus": "consequence",
+            "primary_subject": "history",
+            "detected_subjects": [],
+        },
+    )
+
+    assert any(
+        "вызвало" in variant
+        and "ухудшение" in variant
+        and "имела" not in variant
+        for variant in variants[1:]
+    )
+
+
+def test_expand_query_recognizes_implicit_goal_wording():
+    variants = expand_query("кто такие младотурки и чего они добивались")
+
+    assert any(
+        "младотурки" in variant
+        and "цели" in variant
+        and "добивались" not in variant
+        for variant in variants[1:]
+    )

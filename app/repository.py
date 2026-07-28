@@ -45,6 +45,7 @@ class RetrievalRow:
     snippet: str
     score: float
     text: str
+    fragment_text: str | None = None
     doc_id: str | None = None
     element_index: int | None = None
     meta: dict[str, Any] = field(default_factory=dict)
@@ -683,6 +684,7 @@ class RagRepository:
                     """
                     WITH ordered AS (
                         SELECT
+                            fragment_id,
                             text,
                             meta,
                             page,
@@ -697,7 +699,7 @@ class RagRepository:
                         WHERE element_index = :element_index
                         LIMIT 1
                     )
-                    SELECT o.text, o.meta, o.page, o.element_index
+                    SELECT o.fragment_id, o.text, o.meta, o.page, o.element_index
                     FROM ordered o, target t
                     WHERE o.rn BETWEEN t.rn - :neighbors AND t.rn + :neighbors
                     ORDER BY o.rn ASC
@@ -729,41 +731,23 @@ class RagRepository:
                 meta.setdefault("chunk_type_reason", hit.chunk_type_reason)
             meta["expanded_text"] = context
             meta["expanded_from_neighbors"] = True
-            quality = text_quality_flags(context, page=hit.page, meta=meta)
-            refreshed_meta = {
-                key: value
-                for key, value in meta.items()
-                if key not in {"chunk_type", "chunk_type_reason", "is_navigation_index"}
-            }
-            chunk_details = detect_chunk_type_details(context, meta=refreshed_meta, page=hit.page)
-            meta["chunk_type"] = chunk_details.get("chunk_type", "unknown")
-            meta["chunk_type_reason"] = chunk_details.get("chunk_type_reason")
-            meta["is_navigation_index"] = meta["chunk_type"] == "navigation_index"
-            for key in (
-                "is_toc",
-                "is_index",
-                "is_bibliography",
-                "is_caption",
-                "is_fragmented",
-                "is_too_short",
-                "starts_mid_word",
-                "low_text_quality",
-            ):
-                meta[key] = bool(quality.get(key))
-            meta["quality_score"] = float(quality.get("quality_score") or hit.quality_score)
-            meta["low_text_quality_reason"] = quality.get("low_text_quality_reason")
+            meta["context_fragments"] = [
+                {
+                    "fragment_id": str(row["fragment_id"]),
+                    "page": row["page"],
+                    "element_index": row["element_index"],
+                    "text": str(row["text"]),
+                }
+                for row in context_rows
+                if row["text"]
+            ]
             expanded.append(
                 replace(
                     hit,
                     text=context,
+                    fragment_text=hit.fragment_text or hit.text,
                     meta=meta,
                     expanded_from_neighbors=True,
-                    is_fragmented=bool(quality.get("is_fragmented")),
-                    is_too_short=bool(quality.get("is_too_short")),
-                    starts_mid_word=bool(quality.get("starts_mid_word")),
-                    low_text_quality=bool(quality.get("low_text_quality")),
-                    quality_score=max(hit.quality_score, float(quality.get("quality_score") or hit.quality_score)),
-                    low_text_quality_reason=quality.get("low_text_quality_reason"),
                 )
             )
         return expanded
@@ -991,6 +975,12 @@ QUERY_STOPWORDS = {
     "какая",
     "какое",
     "какие",
+    "каков",
+    "какова",
+    "каково",
+    "каковы",
+    "такие",
+    "чего",
     "когда",
     "почему",
     "где",
@@ -1003,6 +993,10 @@ QUERY_STOPWORDS = {
     "были",
     "бывает",
     "бывают",
+    "имел",
+    "имела",
+    "имело",
+    "имели",
     "изучает",
     "изучают",
     "отвечает",
@@ -1316,7 +1310,7 @@ def _phrase_modifier_match(
     wrong_modifier = False
     for phrase in required_phrases:
         phrase_label = _format_phrase(phrase.tokens)
-        if _unit_matches(phrase.tokens, text_tokens):
+        if _unit_matches(phrase.tokens, text_tokens) or _nearby_year_phrase_matches(phrase, text_tokens):
             matched.append(phrase_label)
             continue
         missing.append(phrase_label)
@@ -1340,6 +1334,38 @@ def _phrase_modifier_match(
         phrase_score_before_penalty=_clamp_score(phrase_score_before_penalty),
         phrase_score_after_penalty=_clamp_score(score),
     )
+
+
+def _nearby_year_phrase_matches(required: RequiredExactPhrase, text_tokens: list[str]) -> bool:
+    """Accept common caption/OCR layout: ``event. ... 1908 г.``.
+
+    The numeric year remains mandatory and is allowed only close to the
+    phrase lead. Other numeric modifiers (chapter numbers, law numbers, model
+    versions) keep their strict contiguous-match behavior.
+    """
+    if len(required.modifier) != 2:
+        return False
+    year, year_word = required.modifier
+    if not (year.isdigit() and len(year) == 4):
+        return False
+    if year_word not in {"г", "год", "года", "году", "годы"}:
+        return False
+
+    lead_positions = [
+        idx
+        for idx, token in enumerate(text_tokens)
+        if _phrase_window_matches((required.lead,), [token])
+    ]
+    for lead_idx in lead_positions:
+        window_end = min(len(text_tokens), lead_idx + 13)
+        for year_idx in range(lead_idx + 1, window_end):
+            if text_tokens[year_idx] != year:
+                continue
+            if year_idx + 1 >= len(text_tokens):
+                continue
+            if _phrase_window_matches((year_word,), [text_tokens[year_idx + 1]]):
+                return True
+    return False
 
 
 def _has_conflicting_entity_modifier(required: RequiredExactPhrase, text_tokens: list[str]) -> bool:
@@ -1636,9 +1662,34 @@ def lexical_overlap(query_terms: list[str], text_value: str) -> float:
 
 
 ANSWER_CUE_STEMS: dict[str, tuple[str, ...]] = {
-    "goal": ("цел", "задач", "предназнач", "направлен", "стрем"),
-    "cause": ("причин", "обуслов", "вследств", "потому", "поскольку", "вызва", "связан"),
-    "consequence": ("последств", "результат", "итог", "привел", "стал", "вызва"),
+    "goal": ("цел", "задач", "предназнач", "направлен", "стрем", "добива"),
+    "cause": (
+        "причин",
+        "предпосыл",
+        "кризис",
+        "недоволь",
+        "оппозиц",
+        "осложн",
+        "поражен",
+        "нежелан",
+        "обуслов",
+        "вследств",
+        "потому",
+        "поскольку",
+    ),
+    "consequence": (
+        "последств",
+        "результат",
+        "итог",
+        "привел",
+        "стал",
+        "вызва",
+        "измен",
+        "потер",
+        "утрат",
+        "усил",
+        "ослаб",
+    ),
 }
 
 
@@ -1670,11 +1721,20 @@ def answer_focus_alignment_score(
     text_tokens = _tokenize(text_value)
     if not text_tokens:
         return 0.0
-    cue_positions = [
-        idx
-        for idx, token in enumerate(text_tokens)
-        if any(token.startswith(stem) for stem in cue_stems)
-    ]
+    cue_positions = []
+    for idx, token in enumerate(text_tokens):
+        if not any(token.startswith(stem) for stem in cue_stems):
+            continue
+        # "Событие вызвало кризис" describes a consequence, not a cause.
+        # Do not let the ambiguous word "кризис" invert causal queries.
+        if focus == "cause" and token.startswith("кризис"):
+            preceding = text_tokens[max(0, idx - 4) : idx]
+            if any(
+                item.startswith(("вызва", "привел", "пород", "результ"))
+                for item in preceding
+            ):
+                continue
+        cue_positions.append(idx)
     if not cue_positions:
         return 0.0
 
@@ -1822,7 +1882,7 @@ def _candidate_required_term_text(row: RetrievalRow, meta: dict[str, Any]) -> st
         seen_parts.add(normalized)
         parts.append(value)
 
-    for value in (row.text, row.snippet, meta.get("expanded_text")):
+    for value in (row.fragment_text or row.text, row.snippet):
         add_part(value)
     for key in ("section_title", "inferred_section_title", "parent_heading", "heading", "nearest_heading"):
         add_part(meta.get(key))
@@ -1999,8 +2059,14 @@ def _candidate_quality(row: RetrievalRow) -> dict[str, Any]:
         except (TypeError, ValueError):
             pass
     chunk_details = detect_chunk_type_details(row.text or row.snippet or "", meta=meta, page=row.page)
-    flags["chunk_type"] = meta.get("chunk_type") or chunk_details.get("chunk_type") or "unknown"
-    flags["chunk_type_reason"] = meta.get("chunk_type_reason") or chunk_details.get("chunk_type_reason")
+    detected_chunk_type = str(chunk_details.get("chunk_type") or "unknown")
+    hard_filter_types = {"navigation_index", "toc", "index", "bibliography"}
+    if detected_chunk_type in hard_filter_types:
+        flags["chunk_type"] = detected_chunk_type
+        flags["chunk_type_reason"] = chunk_details.get("chunk_type_reason")
+    else:
+        flags["chunk_type"] = meta.get("chunk_type") or detected_chunk_type
+        flags["chunk_type_reason"] = meta.get("chunk_type_reason") or chunk_details.get("chunk_type_reason")
     flags["is_navigation_index"] = bool(meta.get("is_navigation_index") is True or flags["chunk_type"] == "navigation_index")
     if flags.get("low_text_quality"):
         flags["quality_score"] = min(float(flags.get("quality_score", 1.0)), 0.25)
@@ -2448,14 +2514,20 @@ def score_retrieval_candidates(
     answer_focus = str(query_analysis.get("answer_focus") or "none")
     enforce_required_entities = bool(required_entities and answer_focus != "none")
     topic_units = _topic_units_for_query(query)
-    lexical_scores = _bm25_scores(query_terms, candidates) if query_terms else {}
+    evidence_candidates = [
+        replace(row, text=row.fragment_text or row.text)
+        for row in candidates
+    ]
+    lexical_scores = _bm25_scores(query_terms, evidence_candidates) if query_terms else {}
     rerank_scores = _normalize_rerank_scores(rerank_raw_scores, len(candidates))
     scored: list[RetrievalRow] = []
     rejected: list[dict[str, Any]] = []
 
     for idx, row in enumerate(candidates):
-        meta = _metadata_with_inferred_section(row)
-        row_for_scoring = replace(row, meta=meta)
+        evidence_text = row.fragment_text or row.text or ""
+        evidence_row = replace(row, text=evidence_text)
+        meta = _metadata_with_inferred_section(evidence_row)
+        row_for_scoring = replace(evidence_row, meta=meta)
         dense_score = _clamp_score(row.dense_score or row.score)
         lexical_score = _clamp_score(max(row.lexical_score, lexical_scores.get(row.fragment_id, 0.0)))
         section_context = " ".join(
@@ -2469,14 +2541,14 @@ def score_retrieval_candidates(
         )
         # Enriched search_text is useful for recall, but it contains document-wide
         # keywords and must not be treated as evidence during final scoring.
-        lexical_text = f"{row.title or ''} {row.source_uri or ''} {section_context} {row.text or ''}"
+        lexical_text = f"{row.title or ''} {row.source_uri or ''} {section_context} {evidence_text}"
         overlap = lexical_overlap(query_terms, lexical_text)
         raw_phrase_score = phrase_match_score(query, lexical_text)
         anchor_score = anchor_phrase_score(query, lexical_text)
         topic_score = topical_match_score(query, lexical_text)
         weighted_match_score = weighted_phrase_term_score(query, lexical_text)
         section_score = section_match_score(query, query_terms, meta)
-        required_term_text = _candidate_required_term_text(row, meta)
+        required_term_text = _candidate_required_term_text(row_for_scoring, meta)
         required_term_match = required_term_match_score(required_terms, required_term_text)
         term_signals = required_term_signals(required_terms, required_term_text, required_term_match)
         required_entity_score = required_entity_match_score(required_entities, lexical_text)
@@ -2555,7 +2627,11 @@ def score_retrieval_candidates(
             quality_score=float(quality.get("quality_score") or 1.0),
             is_too_short=bool(quality.get("is_too_short")),
             low_text_quality=bool(quality.get("low_text_quality")),
-            boundary_penalty_value=concept_boundary_penalty(required_terms, row.text or row.snippet or "", chunk_type=chunk_type),
+            boundary_penalty_value=concept_boundary_penalty(
+                required_terms,
+                evidence_text or row.snippet or "",
+                chunk_type=chunk_type,
+            ),
             answer_alignment_score=answer_alignment_score,
             has_required_entities=enforce_required_entities,
             required_entity_score=required_entity_score,
@@ -2981,6 +3057,20 @@ QUERY_PREFIXES = (
     "урок:",
 )
 
+ANSWER_FOCUS_QUERY_EXPANSIONS: dict[str, tuple[str, ...]] = {
+    "goal": ("цели", "задачи", "намерения", "стремились", "направлены"),
+    "cause": ("предпосылки", "кризис", "недовольство", "оппозиция", "обусловлено"),
+    "consequence": (
+        "итоги",
+        "изменения",
+        "привело",
+        "вызвало",
+        "потери",
+        "ухудшение",
+        "ослабление",
+    ),
+}
+
 
 def normalize_query(query: str) -> str:
     normalized = re.sub(r"\s+", " ", (query or "").strip().lower())
@@ -3007,7 +3097,8 @@ def expand_query(
 
     query_analysis = query_analysis or analyze_query(query)
     terms = _query_terms_for_scoring(query)
-    if len(terms) > 4:
+    answer_focus = str(query_analysis.get("answer_focus") or "none")
+    if len(terms) > 4 and answer_focus == "none":
         return queries
 
     query_synonyms, topic_expansions = _expansion_maps(collection=collection, source_uris=source_uris)
@@ -3020,6 +3111,30 @@ def expand_query(
         if key in query:
             extra_terms.extend(topic_terms)
     extra_terms.extend(subject_expansions_for_query(query_analysis))
+
+    focus_terms = ANSWER_FOCUS_QUERY_EXPANSIONS.get(answer_focus, ())
+    if focus_terms:
+        intent_stems = ANSWER_FOCUS_STEMS.get(answer_focus, ())
+        focused_topic_terms = [
+            term
+            for term in terms
+            if not term.isdigit()
+            and term not in {"год", "года", "году", "годы"}
+            and not any(
+                term.startswith(stem)
+                for stem in intent_stems
+                if "-" not in stem
+            )
+        ]
+        if focused_topic_terms:
+            queries.append(
+                " ".join(
+                    [
+                        *focused_topic_terms,
+                        *focus_terms,
+                    ]
+                )
+            )
 
     if extra_terms:
         queries.append(f"{query} {' '.join(extra_terms)}")

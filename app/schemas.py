@@ -29,10 +29,18 @@ class RetrieveRequest(BaseModel):
     collection: CollectionName = "default"
     source_uris: list[SourceUri] | None = Field(default=None, max_length=settings.max_source_uris)
     return_text: bool = False
+    return_context: bool = False
     debug: bool = False
     include_toc: bool = False
     include_low_quality: bool = False
     include_navigation: bool = False
+
+
+class ContextFragment(BaseModel):
+    fragment_id: str
+    page: int | None = None
+    element_index: int | None = None
+    text: str
 
 
 class Hit(BaseModel):
@@ -46,6 +54,8 @@ class Hit(BaseModel):
     snippet: str
     score: float
     text: str | None = None
+    context_text: str | None = None
+    context_fragments: list[ContextFragment] = Field(default_factory=list)
     dense_score: float = 0.0
     lexical_score: float = 0.0
     phrase_score: float = 0.0

@@ -125,7 +125,7 @@ RULE_LOOKUP_TERMS = {
 EXPLANATION_TERMS = {"почему", "как", "объясни", "объяснить", "объясните", "расскажи", "рассказать"}
 
 ANSWER_FOCUS_STEMS: dict[str, tuple[str, ...]] = {
-    "goal": ("цел", "задач", "предназнач", "направлен", "преслед"),
+    "goal": ("цел", "задач", "предназнач", "направлен", "преслед", "добива", "стрем"),
     "cause": ("причин", "почему", "обуслов", "вследств", "из-за"),
     "consequence": ("последств", "результат", "итог", "привел", "привёл"),
 }
@@ -137,6 +137,10 @@ QUERY_INITIAL_NON_ENTITIES = {
     "какая",
     "какие",
     "какой",
+    "каков",
+    "какова",
+    "каково",
+    "каковы",
     "когда",
     "кто",
     "почему",
@@ -350,6 +354,9 @@ def extract_named_entities(query: str) -> list[str]:
     seen: set[str] = set()
     for match in re.finditer(r"\b[А-ЯЁ][а-яё]+(?:\s+[IVXLCDM]+|\s+\d+)?", query or ""):
         value = match.group(0).strip()
+        value_tokens = tokenize(value)
+        if value_tokens and value_tokens[0] in QUERY_INITIAL_NON_ENTITIES:
+            continue
         key = value.lower().replace("ё", "е")
         if key not in seen:
             entities.append(value)
@@ -672,6 +679,9 @@ def detect_chunk_type_details(text: str, *, meta: dict[str, Any] | None = None, 
     if not tokens:
         return {"chunk_type": "unknown", "chunk_type_reason": "empty_text"}
 
+    if _looks_like_chapter_opener(text):
+        return {"chunk_type": "navigation_index", "chunk_type_reason": "chapter_terms_and_timeline"}
+
     if _looks_like_navigation_reference(text):
         return {"chunk_type": "navigation_index", "chunk_type_reason": "navigation_reference"}
 
@@ -853,6 +863,22 @@ def _looks_like_navigation_reference(text: str) -> bool:
     if normalized.startswith("см ") and len(tokenize(normalized)) <= 8:
         return True
     return "см. разбор" in cleaned.lower() or "см разбор" in normalized
+
+
+def _looks_like_chapter_opener(text: str) -> bool:
+    """Detect textbook openers made of a guiding question, terms and timeline."""
+    raw = text or ""
+    if "?" not in raw[:350]:
+        return False
+    bullet_terms = len(re.findall(r"[•●]\s*[A-Za-zА-Яа-яЁё«\"]", raw))
+    year_entries = len(
+        re.findall(
+            r"(?<!\d)(?:1[5-9]\d{2}|20\d{2})(?:\s*[—-]\s*(?:1[5-9]\d{2}|20\d{2}))?\s*(?:гг?\.?|год(?:а|у)?)?",
+            raw,
+            flags=re.IGNORECASE,
+        )
+    )
+    return bullet_terms >= 3 and year_entries >= 3
 
 
 def _looks_like_navigation_index(text: str, *, page: int | None = None) -> bool:

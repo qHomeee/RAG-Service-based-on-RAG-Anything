@@ -29,6 +29,7 @@ class FakeService:
         include_toc: bool = False,
         include_low_quality: bool = False,
         include_navigation: bool = False,
+        return_context: bool = False,
     ):
         return []
 

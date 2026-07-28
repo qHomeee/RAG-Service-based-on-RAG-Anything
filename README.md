@@ -257,7 +257,7 @@ Current defaults are tuned for better recall on long/noisy corpora:
 How it works:
 
 1. query is normalized (`тема урока:`/`тема:`/`урок:` prefixes are removed);
-2. short topic queries are expanded into 2-3 search variants (base + thematic terms);
+2. short topic queries and goal/cause/consequence questions are expanded into bounded search variants;
 3. HNSW vector recall gets top-N candidate fragments for each variant in pgvector space;
 4. PostgreSQL Russian full-text search supplies a separate lexical recall path;
 5. semantic and lexical candidates are fused while preserving both paths in the bounded rerank pool;
@@ -265,7 +265,15 @@ How it works:
 7. keyword relevance rerank applies topic marker penalties/bonuses;
 8. final grounded context in `/query` is limited by `RAG_FINAL_TOP_K`.
 
-`/retrieve` now returns full fragment content in `hits[].snippet` (legacy field name kept for compatibility).
+`/retrieve` keeps expanded context in `hits[].snippet` for backward compatibility.
+For orchestrators, request `return_text=true`: `hits[].text` is the exact, complete
+`fragments.text` value for the selected `fragment_id`. Request `return_context=true`
+to additionally receive:
+
+- `context_text`: the bounded expanded context used around the hit;
+- `context_fragments`: exact neighboring fragments with their own IDs, pages and boundaries.
+
+Do not treat legacy `snippet` as the exact target fragment.
 
 If cross-encoder fails to load, logs include `cross_encoder_unavailable`, and `/readyz` reports:
 - `checks.reranker_loaded`
@@ -453,6 +461,12 @@ curl -X POST http://localhost:8000/ingest -H "Content-Type: application/json" -H
 curl -X POST http://localhost:8000/retrieve -H "Content-Type: application/json" -H "X-API-Key: super-secret-key" -d "{\"query\":\"тема урока: стили речи\",\"top_k\":3,\"min_score\":0.45,\"collection\":\"default\"}"
 ```
 
+Для локального оркестратора используйте точный fragment/context-контракт:
+
+```bat
+curl -X POST http://localhost:8000/retrieve -H "Content-Type: application/json" -H "X-API-Key: super-secret-key" -d "{\"query\":\"какие цели преследовали реформы Танзимат\",\"top_k\":5,\"min_score\":0.35,\"collection\":\"default\",\"return_text\":true,\"return_context\":true}"
+```
+
 Рекомендуемые one-line варианты для **подбора более точных фрагментов** (Windows CMD):
 
 1) **Базовый balanced-поиск** (хорошая стартовая точка):
@@ -484,7 +498,7 @@ curl -X POST http://localhost:8000/retrieve -H "Content-Type: application/json" 
 Ответ (пример):
 
 ```json
-{"hits":[{"fragment_id":"f1","source_uri":"pub_1167883.pdf","title":"pub_1167883.pdf","type":"text","page":12,"snippet":"...","score":0.9123,"text":null}]}
+{"hits":[{"fragment_id":"f1","source_uri":"pub_1167883.pdf","title":"pub_1167883.pdf","type":"text","page":12,"snippet":"legacy expanded context","score":0.9123,"text":"exact complete target fragment","context_text":"bounded expanded context","context_fragments":[{"fragment_id":"f0","page":11,"element_index":10,"text":"exact neighboring fragment"},{"fragment_id":"f1","page":12,"element_index":11,"text":"exact complete target fragment"}]}]}
 ```
 
 **POST /query**

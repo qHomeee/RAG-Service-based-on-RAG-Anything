@@ -359,6 +359,7 @@ def retrieve(payload: RetrieveRequest, service: RagService = Depends(get_service
             payload.include_toc,
             payload.include_low_quality,
             payload.include_navigation,
+            payload.return_context,
         )
         RETRIEVAL_RESULTS.observe(len(hits))
         return RetrieveResponse(hits=hits, debug=debug)
@@ -373,6 +374,7 @@ def retrieve(payload: RetrieveRequest, service: RagService = Depends(get_service
         payload.include_toc,
         payload.include_low_quality,
         payload.include_navigation,
+        payload.return_context,
     )
     RETRIEVAL_RESULTS.observe(len(hits))
     return RetrieveResponse(hits=hits)

@@ -200,6 +200,7 @@ class RagService:
         include_toc: bool = False,
         include_low_quality: bool = False,
         include_navigation: bool = False,
+        return_context: bool = False,
     ) -> list[dict]:
         rows = self.repository.retrieve(
             query,
@@ -211,7 +212,12 @@ class RagService:
             include_low_quality=include_low_quality,
             include_navigation=include_navigation,
         )
-        return self._rows_to_hits(rows, return_text=return_text, debug=False)
+        return self._rows_to_hits(
+            rows,
+            return_text=return_text,
+            return_context=return_context,
+            debug=False,
+        )
 
     def retrieve_with_debug(
         self,
@@ -224,6 +230,7 @@ class RagService:
         include_toc: bool = False,
         include_low_quality: bool = False,
         include_navigation: bool = False,
+        return_context: bool = False,
     ) -> tuple[list[dict], dict | None]:
         result = self.repository.retrieve_with_debug(
             query,
@@ -236,23 +243,50 @@ class RagService:
             include_navigation=include_navigation,
             debug=True,
         )
-        return self._rows_to_hits(result.hits, return_text=return_text, debug=True), result.debug
+        return (
+            self._rows_to_hits(
+                result.hits,
+                return_text=return_text,
+                return_context=return_context,
+                debug=True,
+            ),
+            result.debug,
+        )
 
     @staticmethod
-    def _rows_to_hits(rows, *, return_text: bool, debug: bool) -> list[dict]:
+    def _rows_to_hits(
+        rows,
+        *,
+        return_text: bool,
+        return_context: bool,
+        debug: bool,
+    ) -> list[dict]:
         hits: list[dict] = []
         for r in rows:
+            meta = r.meta or {}
+            fragment_text = r.fragment_text or meta.get("search_text") or r.text
+            context_text = r.text or fragment_text
+            context_fragments = meta.get("context_fragments") or [
+                {
+                    "fragment_id": r.fragment_id,
+                    "page": r.page,
+                    "element_index": r.element_index,
+                    "text": fragment_text,
+                }
+            ]
             payload = {
                 "fragment_id": r.fragment_id,
                 "source_uri": r.source_uri,
                 "title": r.title,
                 "type": r.type,
                 "page": r.page,
-                "section_title": (r.meta or {}).get("section_title"),
-                "section_path": (r.meta or {}).get("section_path") or (r.meta or {}).get("heading_path") or [],
+                "section_title": meta.get("section_title"),
+                "section_path": meta.get("section_path") or meta.get("heading_path") or [],
                 "snippet": r.text,
                 "score": float(r.final_score or r.score),
-                "text": r.text if return_text else None,
+                "text": fragment_text if return_text else None,
+                "context_text": context_text if return_context else None,
+                "context_fragments": context_fragments if return_context else [],
                 "dense_score": float(r.dense_score),
                 "lexical_score": float(r.lexical_score),
                 "phrase_score": float(r.phrase_score),

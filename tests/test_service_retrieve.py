@@ -27,7 +27,26 @@ class _FakeRepository:
                 page=1,
                 snippet="short preview",
                 score=0.95,
-                text="full fragment text that should be returned in API snippet",
+                text="context before. full fragment text. context after.",
+                fragment_text="full fragment text",
+                element_index=10,
+                meta={
+                    "search_text": "full fragment text",
+                    "context_fragments": [
+                        {
+                            "fragment_id": "previous",
+                            "page": 1,
+                            "element_index": 9,
+                            "text": "context before.",
+                        },
+                        {
+                            "fragment_id": "f1",
+                            "page": 1,
+                            "element_index": 10,
+                            "text": "full fragment text",
+                        },
+                    ],
+                },
                 dense_score=0.8,
                 lexical_score=0.7,
                 phrase_score=0.65,
@@ -92,11 +111,13 @@ class _FakeRepository:
         ]
 
 
-def test_retrieve_returns_full_fragment_in_snippet_field():
+def test_retrieve_keeps_legacy_expanded_context_in_snippet_field():
     service = RagService(parser=_FakeParser(), repository=_FakeRepository())
     hits = service.retrieve("query", 5, 0.2, "default", None, return_text=False)
-    assert hits[0]["snippet"] == "full fragment text that should be returned in API snippet"
+    assert hits[0]["snippet"] == "context before. full fragment text. context after."
     assert hits[0]["text"] is None
+    assert hits[0]["context_text"] is None
+    assert hits[0]["context_fragments"] == []
     assert hits[0]["score"] == 0.75
     assert hits[0]["dense_score"] == 0.8
     assert hits[0]["lexical_score"] == 0.7
@@ -158,3 +179,25 @@ def test_retrieve_returns_full_fragment_in_snippet_field():
     assert hits[0]["score_after_boosts_before_clamp"] == 0.82
     assert hits[0]["expanded_from_neighbors"] is True
     assert hits[0]["penalties_applied"] == []
+
+
+def test_retrieve_returns_exact_fragment_and_structured_context_on_request():
+    service = RagService(parser=_FakeParser(), repository=_FakeRepository())
+
+    hits = service.retrieve(
+        "query",
+        5,
+        0.2,
+        "default",
+        None,
+        return_text=True,
+        return_context=True,
+    )
+
+    assert hits[0]["text"] == "full fragment text"
+    assert hits[0]["context_text"] == "context before. full fragment text. context after."
+    assert [item["fragment_id"] for item in hits[0]["context_fragments"]] == [
+        "previous",
+        "f1",
+    ]
+    assert hits[0]["context_fragments"][1]["text"] == "full fragment text"
