@@ -14,6 +14,7 @@ class FakeRepository:
                 page=5,
                 text="unrelated",
                 snippet="unrelated",
+                final_score=0.81,
             ),
             SimpleNamespace(
                 fragment_id="right",
@@ -21,6 +22,7 @@ class FakeRepository:
                 page=10,
                 text="Фонетика изучает звуки речи.",
                 snippet="Фонетика изучает звуки речи.",
+                final_score=0.72,
             ),
         ]
 
@@ -31,6 +33,7 @@ def test_acceptance_eval_scores_evidence_rank_and_negative_abstention():
         eval_set=[
             {
                 "query": "Что изучает фонетика?",
+                "category": "russian",
                 "expected_source": "book.pdf",
                 "expected_terms": ["фонетик", "звук"],
             },
@@ -46,6 +49,14 @@ def test_acceptance_eval_scores_evidence_rank_and_negative_abstention():
     assert report["mean_reciprocal_rank"] == 0.5
     assert report["top1_source_accuracy"] == 0.0
     assert report["negative_abstention_rate"] == 1.0
+    result = report["results"][0]
+    assert result["category"] == "russian"
+    assert result["retrieved_hits"][1] == {
+        "fragment_id": "right",
+        "source_uri": "book.pdf",
+        "page": 10,
+        "score": 0.72,
+    }
 
 
 def test_acceptance_eval_treats_pages_as_strict_labels():

@@ -165,9 +165,11 @@ def run_acceptance_eval(
             results.append(
                 {
                     "query": query,
+                    "category": item.get("category"),
                     "is_negative": True,
                     "correct_abstention": correct_abstention,
                     "retrieved_fragment_ids": [row.fragment_id for row in rows],
+                    "retrieved_hits": [_acceptance_hit_payload(row) for row in rows],
                     "elapsed_ms": round(elapsed_ms, 2),
                 }
             )
@@ -196,6 +198,7 @@ def run_acceptance_eval(
         results.append(
             {
                 "query": query,
+                "category": item.get("category"),
                 "is_negative": False,
                 "matched": matched,
                 "first_relevant_rank": first_relevant_rank,
@@ -203,6 +206,7 @@ def run_acceptance_eval(
                 "ndcg_at_k": round(ndcg_score, 4),
                 "top1_source_match": top1_source_match,
                 "retrieved_fragment_ids": [row.fragment_id for row in rows],
+                "retrieved_hits": [_acceptance_hit_payload(row) for row in rows],
                 "elapsed_ms": round(elapsed_ms, 2),
             }
         )
@@ -242,6 +246,18 @@ def _matches_acceptance_evidence(
         return getattr(row, "page", None) in expected_pages
     haystack = f"{getattr(row, 'text', '')} {getattr(row, 'snippet', '')}".casefold()
     return bool(expected_terms) and all(term in haystack for term in expected_terms)
+
+
+def _acceptance_hit_payload(row) -> dict:
+    score = getattr(row, "final_score", None)
+    if score is None:
+        score = getattr(row, "score", None)
+    return {
+        "fragment_id": row.fragment_id,
+        "source_uri": row.source_uri,
+        "page": getattr(row, "page", None),
+        "score": round(float(score), 4) if score is not None else None,
+    }
 
 
 def _mean_booleans(values: list[bool]) -> float:
