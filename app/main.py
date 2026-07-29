@@ -18,6 +18,7 @@ from app.db import SessionLocal, engine
 from app.embeddings import EmbeddingProvider
 from app.models import Base
 from app.observability import slo_metrics
+from app.ocr_preprocessor import OcrPreprocessError
 from app.prometheus import RETRIEVAL_RESULTS, record_http_request, render_metrics
 from app.parser import RAGAnythingParser, log_dependency_compatibility
 from app.repository import EmbeddingModelMismatchError, RagRepository
@@ -221,6 +222,11 @@ async def http_exc_handler(_: Request, exc: HTTPException) -> JSONResponse:
 @app.exception_handler(MineruUnavailableError)
 async def mineru_unavailable_handler(_: Request, exc: MineruUnavailableError) -> JSONResponse:
     return JSONResponse(status_code=500, content={"error": str(exc)})
+
+
+@app.exception_handler(OcrPreprocessError)
+async def ocr_preprocess_error_handler(_: Request, exc: OcrPreprocessError) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"error": str(exc)})
 
 
 @app.exception_handler(IngestLimitError)

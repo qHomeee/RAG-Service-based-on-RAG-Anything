@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.main import app, get_service
+from app.ocr_preprocessor import OcrPreprocessError
 
 
 class FakeService:
@@ -258,6 +259,28 @@ def test_ingest_endpoint(tmp_path: Path):
         body = response.json()
         assert body["indexed_docs"] == 1
         assert body["indexed_fragments"] == 2
+    finally:
+        settings.ingest_path_must_be_under_storage_raw = original_setting
+        app.dependency_overrides.clear()
+
+
+def test_ingest_reports_ocr_resource_failure_as_service_unavailable(tmp_path: Path):
+    class OcrFailingService(FakeService):
+        def ingest(self, *args, **kwargs):
+            raise OcrPreprocessError("Insufficient OCR temporary storage")
+
+    app.dependency_overrides[get_service] = OcrFailingService
+    client = TestClient(app)
+    original_setting = settings.ingest_path_must_be_under_storage_raw
+    settings.ingest_path_must_be_under_storage_raw = False
+    try:
+        response = client.post(
+            "/ingest",
+            headers={"X-Admin-API-Key": settings.admin_api_key},
+            json={"input_path": str(tmp_path), "collection": "default", "reindex": False},
+        )
+        assert response.status_code == 503
+        assert "OCR temporary storage" in response.json()["error"]
     finally:
         settings.ingest_path_must_be_under_storage_raw = original_setting
         app.dependency_overrides.clear()
