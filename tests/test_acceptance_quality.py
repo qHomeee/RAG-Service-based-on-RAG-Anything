@@ -76,3 +76,22 @@ def test_acceptance_eval_treats_pages_as_strict_labels():
     )
 
     assert report["evidence_recall_at_k"] == 0.0
+
+
+def test_acceptance_eval_requires_terms_within_labeled_page():
+    report = run_acceptance_eval(
+        repository=FakeRepository(),
+        eval_set=[
+            {
+                "query": "Что изучает фонетика?",
+                "expected_source": "book.pdf",
+                "expected_pages": [10],
+                "expected_terms": ["морфология"],
+            }
+        ],
+        collection="default",
+        top_k=3,
+        min_score=0.2,
+    )
+
+    assert report["evidence_recall_at_k"] == 0.0

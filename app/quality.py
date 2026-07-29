@@ -242,10 +242,12 @@ def _matches_acceptance_evidence(
 ) -> bool:
     if row.source_uri != expected_source:
         return False
-    if expected_pages:
-        return getattr(row, "page", None) in expected_pages
+    if expected_pages and getattr(row, "page", None) not in expected_pages:
+        return False
     haystack = f"{getattr(row, 'text', '')} {getattr(row, 'snippet', '')}".casefold()
-    return bool(expected_terms) and all(term in haystack for term in expected_terms)
+    if expected_terms and not all(term in haystack for term in expected_terms):
+        return False
+    return bool(expected_pages or expected_terms)
 
 
 def _acceptance_hit_payload(row) -> dict:
