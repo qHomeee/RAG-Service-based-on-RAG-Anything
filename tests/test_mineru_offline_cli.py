@@ -1,7 +1,7 @@
 import sys
 import types
 
-from app.mineru_offline_cli import main
+from app.mineru_offline_cli import _guarded_text_block_merge, main
 from app.mineru_runner import build_mineru_command
 
 
@@ -30,3 +30,46 @@ def test_offline_cli_installs_llm_stub(monkeypatch):
     assert rc == 0
     assert "mineru.utils.llm_aided" in sys.modules
     assert sys.modules["mineru.utils.llm_aided"].llm_aided_title("abc") == "abc"
+
+
+def test_missing_inline_equation_content_skips_unsafe_mineru_merge():
+    calls = []
+
+    def original(block1, block2):
+        calls.append((block1, block2))
+        return "merged"
+
+    guarded = _guarded_text_block_merge(original)
+    next_block = {"lines": [{"spans": [{"content": "Продолжение"}]}]}
+    equation_block = {
+        "lines": [
+            {
+                "spans": [
+                    {
+                        "type": "inline_equation",
+                        "image_path": "formula.jpg",
+                    }
+                ]
+            }
+        ]
+    }
+
+    assert guarded(next_block, equation_block) == (next_block, equation_block)
+    assert calls == []
+
+
+def test_normal_text_spans_still_use_native_mineru_merge():
+    def original(block1, block2):
+        return block1["id"], block2["id"]
+
+    guarded = _guarded_text_block_merge(original)
+    next_block = {
+        "id": "next",
+        "lines": [{"spans": [{"content": "продолжение"}]}],
+    }
+    previous_block = {
+        "id": "previous",
+        "lines": [{"spans": [{"content": "текст"}]}],
+    }
+
+    assert guarded(next_block, previous_block) == ("next", "previous")

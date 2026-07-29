@@ -40,6 +40,57 @@ def _install_llm_aided_stub() -> None:
     sys.modules["mineru.utils.llm_aided"] = stub
 
 
+def _edge_span(block: object, *, first: bool) -> dict | None:
+    if not isinstance(block, dict):
+        return None
+    lines = block.get("lines")
+    if not isinstance(lines, list) or not lines:
+        return None
+    line = lines[0] if first else lines[-1]
+    if not isinstance(line, dict):
+        return None
+    spans = line.get("spans")
+    if not isinstance(spans, list) or not spans:
+        return None
+    span = spans[0] if first else spans[-1]
+    return span if isinstance(span, dict) else None
+
+
+def _guarded_text_block_merge(original):
+    def guarded(block1, block2):
+        first_span = _edge_span(block1, first=True)
+        last_span = _edge_span(block2, first=False)
+        if (
+            first_span is not None
+            and not isinstance(first_span.get("content"), str)
+        ) or (
+            last_span is not None
+            and not isinstance(last_span.get("content"), str)
+        ):
+            return block1, block2
+        return original(block1, block2)
+
+    guarded._rag_missing_span_content_guard = True
+    return guarded
+
+
+def _install_missing_span_content_guard() -> None:
+    try:
+        para_split_module = importlib.import_module(
+            "mineru.backend.pipeline.para_split"
+        )
+        current = getattr(para_split_module, "__merge_2_text_blocks")
+    except (ImportError, AttributeError):
+        return
+    if getattr(current, "_rag_missing_span_content_guard", False):
+        return
+    setattr(
+        para_split_module,
+        "__merge_2_text_blocks",
+        _guarded_text_block_merge(current),
+    )
+
+
 def _print_transformers_hint() -> None:
     print(
         "В .venv-mineru несовместим transformers. "
@@ -126,6 +177,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.offline:
         _install_llm_aided_stub()
+        _install_missing_span_content_guard()
 
     if not args.path or not args.output:
         parser.error("--path and --output are required unless --doctor is used")
