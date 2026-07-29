@@ -440,7 +440,17 @@ def build_document_profile(
 
 def extract_grade(text: str) -> int | None:
     match = re.search(r"(?<!\d)([1-9]|1[0-2])\s*(?:класс|klass|class)(?![a-zа-я0-9])", text or "", re.IGNORECASE)
-    return int(match.group(1)) if match else None
+    if match:
+        return int(match.group(1))
+
+    filename_like = re.sub(r"[_-]+", " ", text or "")
+    transliterated_subject_grade = re.search(
+        r"(?:russkij\s+jazyk|jazyk|geografija|khimiya|istorija|biologija|fizika|literatura)"
+        r"\s+([1-9]|1[0-2])(?=\s|$)",
+        filename_like,
+        re.IGNORECASE,
+    )
+    return int(transliterated_subject_grade.group(1)) if transliterated_subject_grade else None
 
 
 def detect_doc_type(text: str) -> str:

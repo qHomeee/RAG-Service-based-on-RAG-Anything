@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 DEFAULT_SUBJECT_HINTS: dict[str, list[str]] = {
     "history": [
         "история",
+        "istorija",
         "правление",
         "царствование",
         "реформы",
@@ -28,6 +29,7 @@ DEFAULT_SUBJECT_HINTS: dict[str, list[str]] = {
     ],
     "russian_language": [
         "русский язык",
+        "russkij jazyk",
         "фонетика",
         "лексикология",
         "фразеология",
@@ -105,6 +107,7 @@ DEFAULT_SUBJECT_HINTS: dict[str, list[str]] = {
     "literature": ["литература", "роман", "повесть", "стихотворение", "поэма", "герой", "сюжет", "жанр"],
     "geography": [
         "география",
+        "geografija",
         "климат",
         "материк",
         "океан",
@@ -136,6 +139,7 @@ DEFAULT_SUBJECT_HINTS: dict[str, list[str]] = {
     ],
     "chemistry": [
         "химия",
+        "khimiya",
         "вещество",
         "реакция",
         "молекула",
