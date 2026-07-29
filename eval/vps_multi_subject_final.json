@@ -176,10 +176,10 @@
   },
   {
     "category": "geography",
-    "query": "Какие производящая и потребляющая сельскохозяйственные зоны сложились в России к концу XIX века?",
+    "query": "Какие территории входили в производящую сельскохозяйственную зону России к концу XIX века?",
     "expected_source": "4e684ce46f_geografija_9_klass_e_a_tamozhnjaja_2022_g.pdf",
     "expected_pages": [20],
-    "expected_terms": ["производящ", "центральн"]
+    "expected_terms": ["производящ", "поволжье"]
   },
   {
     "category": "geography",
