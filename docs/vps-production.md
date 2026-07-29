@@ -62,10 +62,11 @@ curl -X POST http://127.0.0.1:8000/ingest \
 Для больших школьных учебников на CPU задайте в `.env.docker`
 `MAX_FILE_SIZE_MB=128` и `MINERU_TIMEOUT_SECONDS=7200`. `/ingest` защищён отдельным
 admin-ключом, поэтому этот лимит не расширяет публичный retrieval API. В shared-профиле
-контейнер приложения ограничен 9 GB: большой сканированный учебник превысил 7.5 GB вместе
-с двумя API workers и вызвал cgroup memory pressure при лимите 8 GB. Таймаут передаётся
-непосредственно в MinerU subprocess; при его превышении дочерний процесс завершается,
-а ingest возвращает ошибку вместо зависшего worker. Предел `memswap_limit: 13g` явно
+контейнер приложения ограничен 9 GB: измеренный пик MinerU вместе с уже прогретыми
+embedding workers составил 8.12 GB, а прежний лимит 8 GB вызывал cgroup memory pressure.
+Таймаут передаётся непосредственно в MinerU subprocess; при его превышении дочерний
+процесс завершается, а ingest возвращает ошибку вместо зависшего worker. Предел
+`memswap_limit: 13g` явно
 разрешает до 4 GB swap сверх лимита RAM и не зависит от неявной Docker-политики swap.
 
 Перед MinerU сервис проверяет текстовый слой PDF по выборке страниц. Для скана он запускает
@@ -139,13 +140,21 @@ python -m scripts.run_quality_eval \
   --min-negative-abstention 0.90
 
 python -m scripts.run_acceptance_eval \
-  --eval-set eval/cpu_vps_acceptance.json \
-  --top-k 3 \
+  --eval-set eval/vps_multi_subject_final.json \
+  --top-k 5 \
   --min-evidence-recall 0.90 \
   --min-evidence-ndcg 0.85 \
   --min-negative-abstention 0.90 \
-  --max-p95-ms 4000
+  --max-p95-ms 5000
 ```
+
+Этот набор содержит 50 запросов по пяти предметам, включая 9 OOD-вопросов.
+Отчёт выводит отдельные recall, nDCG, MRR, source accuracy, OOD-отказ и latency
+по каждой категории, чтобы общий средний балл не скрывал слабый предмет.
+
+По умолчанию k6 чередует пять предметов и запрашивает полные фрагменты
+(`RETURN_TEXT=true`), как локальный оркестратор. Для отдельного замера
+расширенного контекста задайте `RETURN_CONTEXT=true`.
 
 Не утверждайте качество production только по smoke-запросам. Golden set должен содержать
 50–100 реальных вопросов, релевантные `fragment_id`, сложные перефразировки и вопросы вне

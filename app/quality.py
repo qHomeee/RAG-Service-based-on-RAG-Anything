@@ -229,6 +229,7 @@ def run_acceptance_eval(
             "p95": round(_percentile(latency_sorted, 0.95), 2),
             "max": round(max(latencies_ms), 2) if latencies_ms else 0.0,
         },
+        "categories": _acceptance_category_summary(results),
         "results": results,
     }
 
@@ -260,6 +261,57 @@ def _acceptance_hit_payload(row) -> dict:
         "page": getattr(row, "page", None),
         "score": round(float(score), 4) if score is not None else None,
     }
+
+
+def _acceptance_category_summary(results: list[dict]) -> dict[str, dict]:
+    grouped: dict[str, list[dict]] = {}
+    for result in results:
+        category = str(result.get("category") or "uncategorized")
+        grouped.setdefault(category, []).append(result)
+
+    summaries: dict[str, dict] = {}
+    for category, category_results in grouped.items():
+        positives = [result for result in category_results if not result["is_negative"]]
+        negatives = [result for result in category_results if result["is_negative"]]
+        latencies = sorted(float(result["elapsed_ms"]) for result in category_results)
+        summaries[category] = {
+            "queries_count": len(category_results),
+            "positive_queries_count": len(positives),
+            "negative_queries_count": len(negatives),
+            "evidence_recall_at_k": (
+                _mean_booleans([bool(result["matched"]) for result in positives])
+                if positives
+                else None
+            ),
+            "evidence_ndcg_at_k": (
+                _mean_numbers([float(result["ndcg_at_k"]) for result in positives])
+                if positives
+                else None
+            ),
+            "mean_reciprocal_rank": (
+                _mean_numbers([float(result["reciprocal_rank"]) for result in positives])
+                if positives
+                else None
+            ),
+            "top1_source_accuracy": (
+                _mean_booleans([bool(result["top1_source_match"]) for result in positives])
+                if positives
+                else None
+            ),
+            "negative_abstention_rate": (
+                _mean_booleans(
+                    [bool(result["correct_abstention"]) for result in negatives]
+                )
+                if negatives
+                else None
+            ),
+            "latency_ms": {
+                "mean": round(sum(latencies) / len(latencies), 2),
+                "p95": round(_percentile(latencies, 0.95), 2),
+                "max": round(max(latencies), 2),
+            },
+        }
+    return summaries
 
 
 def _mean_booleans(values: list[bool]) -> float:

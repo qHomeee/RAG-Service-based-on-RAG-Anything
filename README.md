@@ -209,13 +209,17 @@ The repository also contains a source/page/term-labeled CPU acceptance suite:
 
 ```bash
 python -m scripts.run_acceptance_eval \
-  --eval-set eval/cpu_vps_acceptance.json \
-  --top-k 3 \
+  --eval-set eval/vps_multi_subject_final.json \
+  --top-k 5 \
   --min-evidence-recall 0.90 \
   --min-evidence-ndcg 0.85 \
   --min-negative-abstention 0.90 \
-  --max-p95-ms 4000
+  --max-p95-ms 5000
 ```
+
+The 50-query VPS set covers five textbook subjects plus OOD questions. Its
+report includes per-category recall, nDCG, MRR, source accuracy, abstention and
+latency, so a weak subject cannot hide behind the overall average.
 
 Hyperparameter tuning (grid search for `HYBRID_VECTOR_WEIGHT`, `VECTOR_RECALL_TOP_N`, `RERANK_TOP_N`):
 
@@ -238,7 +242,11 @@ k6:
 API_KEY='<YOUR_API_KEY>' VUS=4 DURATION=2m k6 run scripts/loadtest/k6_retrieve.js
 ```
 
-The k6 script includes threshold checks for `p95`, `p99`, and error rate.
+The k6 script includes threshold checks for `p95`, `p99`, error rate and response
+contract checks.
+It rotates across the five production textbook subjects and defaults to
+`RETURN_TEXT=true`, matching the orchestrator contract. Set `RETURN_CONTEXT=true`
+only when measuring neighbor-context expansion as well.
 
 
 ## Retrieval quality tuning
@@ -383,9 +391,9 @@ throughput and leave too little memory for MinerU and PostgreSQL.
 For CPU parsing of textbooks with hundreds of pages, keep the admin-only ingest limits
 explicit: `MAX_FILE_SIZE_MB=128`, `MAX_INGEST_BATCH_MB=1000`, and
 `MINERU_TIMEOUT_SECONDS=7200`. The shared VPS profile reserves 9 GB for the app container:
-a large scanned textbook pushed MinerU and two API workers above 7.5 GB and caused cgroup
-memory pressure at an 8 GB limit. Its explicit 13 GB memory-plus-swap ceiling permits up to
-4 GB of swap without leaving Docker's default swap policy implicit.
+a large textbook pushed MinerU plus warmed embedding workers to a measured 8.12 GB peak;
+the former 8 GB limit caused cgroup memory pressure. Its explicit 13 GB memory-plus-swap
+ceiling permits up to 4 GB of swap without leaving Docker's default swap policy implicit.
 
 Scanned PDFs are sampled before parsing. When the sampled pages do not contain a usable
 text layer, the production image runs OCRmyPDF/Tesseract with `rus+eng` on CPU and records

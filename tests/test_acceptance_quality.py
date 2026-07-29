@@ -49,6 +49,20 @@ def test_acceptance_eval_scores_evidence_rank_and_negative_abstention():
     assert report["mean_reciprocal_rank"] == 0.5
     assert report["top1_source_accuracy"] == 0.0
     assert report["negative_abstention_rate"] == 1.0
+    assert report["categories"]["russian"] == {
+        "queries_count": 1,
+        "positive_queries_count": 1,
+        "negative_queries_count": 0,
+        "evidence_recall_at_k": 1.0,
+        "evidence_ndcg_at_k": 0.6309,
+        "mean_reciprocal_rank": 0.5,
+        "top1_source_accuracy": 0.0,
+        "negative_abstention_rate": None,
+        "latency_ms": report["categories"]["russian"]["latency_ms"],
+    }
+    assert report["categories"]["uncategorized"]["queries_count"] == 1
+    assert report["categories"]["uncategorized"]["negative_abstention_rate"] == 1.0
+    assert report["categories"]["uncategorized"]["evidence_recall_at_k"] is None
     result = report["results"][0]
     assert result["category"] == "russian"
     assert result["retrieved_hits"][1] == {

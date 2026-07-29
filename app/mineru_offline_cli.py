@@ -74,6 +74,34 @@ def _guarded_text_block_merge(original):
     return guarded
 
 
+def _guarded_para_text_merge(original):
+    def guarded(para_block):
+        if isinstance(para_block, dict):
+            lines = para_block.get("lines")
+            if isinstance(lines, list):
+                for line in lines:
+                    if not isinstance(line, dict):
+                        continue
+                    spans = line.get("spans")
+                    if not isinstance(spans, list):
+                        continue
+                    for span in spans:
+                        if (
+                            isinstance(span, dict)
+                            and not isinstance(span.get("content"), str)
+                        ):
+                            # MinerU 2.6 can emit image-backed inline equations
+                            # without `content`, while its Markdown renderer
+                            # indexes the key unconditionally. Formula parsing is
+                            # disabled in the CPU profile, so an empty textual
+                            # representation is the safe loss-bounded fallback.
+                            span["content"] = ""
+        return original(para_block)
+
+    guarded._rag_missing_span_content_guard = True
+    return guarded
+
+
 def _install_missing_span_content_guard() -> None:
     try:
         para_split_module = importlib.import_module(
@@ -81,14 +109,33 @@ def _install_missing_span_content_guard() -> None:
         )
         current = getattr(para_split_module, "__merge_2_text_blocks")
     except (ImportError, AttributeError):
-        return
-    if getattr(current, "_rag_missing_span_content_guard", False):
-        return
-    setattr(
-        para_split_module,
-        "__merge_2_text_blocks",
-        _guarded_text_block_merge(current),
-    )
+        pass
+    else:
+        if not getattr(current, "_rag_missing_span_content_guard", False):
+            setattr(
+                para_split_module,
+                "__merge_2_text_blocks",
+                _guarded_text_block_merge(current),
+            )
+
+    try:
+        markdown_module = importlib.import_module(
+            "mineru.backend.pipeline.pipeline_middle_json_mkcontent"
+        )
+        current_markdown_merge = getattr(markdown_module, "merge_para_with_text")
+    except (ImportError, AttributeError):
+        pass
+    else:
+        if not getattr(
+            current_markdown_merge,
+            "_rag_missing_span_content_guard",
+            False,
+        ):
+            setattr(
+                markdown_module,
+                "merge_para_with_text",
+                _guarded_para_text_merge(current_markdown_merge),
+            )
 
 
 def _print_transformers_hint() -> None:

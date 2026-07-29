@@ -1,7 +1,11 @@
 import sys
 import types
 
-from app.mineru_offline_cli import _guarded_text_block_merge, main
+from app.mineru_offline_cli import (
+    _guarded_para_text_merge,
+    _guarded_text_block_merge,
+    main,
+)
 from app.mineru_runner import build_mineru_command
 
 
@@ -73,3 +77,41 @@ def test_normal_text_spans_still_use_native_mineru_merge():
     }
 
     assert guarded(next_block, previous_block) == ("next", "previous")
+
+
+def test_missing_inline_equation_content_is_safe_for_markdown_merge():
+    captured = []
+
+    def original(para_block):
+        captured.append(para_block)
+        return para_block["lines"][0]["spans"][0]["content"]
+
+    guarded = _guarded_para_text_merge(original)
+    equation_block = {
+        "type": "text",
+        "lines": [
+            {
+                "spans": [
+                    {
+                        "type": "inline_equation",
+                        "image_path": "formula.jpg",
+                    }
+                ]
+            }
+        ],
+    }
+
+    assert guarded(equation_block) == ""
+    assert captured[0]["lines"][0]["spans"][0]["content"] == ""
+
+
+def test_markdown_merge_preserves_existing_span_content():
+    def original(para_block):
+        return para_block["lines"][0]["spans"][0]["content"]
+
+    guarded = _guarded_para_text_merge(original)
+    text_block = {
+        "lines": [{"spans": [{"type": "text", "content": "NaCl"}]}],
+    }
+
+    assert guarded(text_block) == "NaCl"
