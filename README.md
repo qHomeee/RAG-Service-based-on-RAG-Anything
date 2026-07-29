@@ -384,7 +384,8 @@ For CPU parsing of textbooks with hundreds of pages, keep the admin-only ingest 
 explicit: `MAX_FILE_SIZE_MB=128`, `MAX_INGEST_BATCH_MB=1000`, and
 `MINERU_TIMEOUT_SECONDS=7200`. The shared VPS profile reserves 9 GB for the app container:
 a large scanned textbook pushed MinerU and two API workers above 7.5 GB and caused cgroup
-memory pressure at an 8 GB limit.
+memory pressure at an 8 GB limit. Its explicit 13 GB memory-plus-swap ceiling permits up to
+4 GB of swap without leaving Docker's default swap policy implicit.
 
 - edit `.env.docker` and set `UVICORN_WORKERS` (for example `4`), then restart app:
 
