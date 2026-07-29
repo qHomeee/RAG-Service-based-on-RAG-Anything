@@ -19,6 +19,7 @@ from app.repository import (
     _bm25_scores,
     _normalize_rerank_scores,
     _metadata_with_inferred_section,
+    _apply_explicit_source_scope,
     _query_terms_for_scoring,
     answer_focus_alignment_score,
     apply_adaptive_threshold,
@@ -92,6 +93,7 @@ def test_query_terms_keep_numbers_roman_numerals_and_short_terms():
         ("митоз клетки", "biology"),
         ("условия протекания реакций ионного обмена", "chemistry"),
         ("как устранить жёсткость воды", "chemistry"),
+        ("Почему раствор хлороводорода проводит электрический ток?", "chemistry"),
         ("специализация экономического района", "geography"),
         ("топливно-энергетический комплекс России", "geography"),
     ],
@@ -231,6 +233,17 @@ def test_cause_alignment_recognizes_explanatory_historical_prose():
     )
 
     assert direct > partial
+
+
+def test_cause_alignment_recognizes_scientific_explanation():
+    query = "Почему раствор хлороводорода проводит электрический ток?"
+    evidence = (
+        "Под действием молекул воды молекулы хлороводорода распадаются "
+        "на катионы водорода и хлорид-анионы. Благодаря появлению в растворе "
+        "заряженных частиц он проводит электрический ток."
+    )
+
+    assert answer_focus_alignment_score(query, evidence) > 0.5
 
 
 def test_final_scoring_does_not_treat_neighbor_context_as_target_evidence():
@@ -649,6 +662,33 @@ def test_subject_mismatch_penalizes_other_subject_dense_hits():
 
     assert scored[0].fragment_id == "biology"
     assert any(item["fragment_id"] == "history" and item["rejection_reason"] == "subject_mismatch" for item in rejected)
+
+
+def test_explicit_source_scope_overrides_heuristic_subject_mismatch():
+    query = "Почему проводник создаёт электрический ток?"
+    analysis = analyze_query(query)
+    assert analysis["primary_subject"] == "physics"
+    scoped = _apply_explicit_source_scope(
+        analysis,
+        source_uris=["chemistry.pdf"],
+    )
+    chemistry = _row(
+        "chemistry",
+        0.75,
+        "Раствор хлороводорода проводит электрический ток благодаря образованию ионов.",
+        "chemistry.pdf",
+    )
+    chemistry.subject_score = 0.12
+
+    scored, rejected = score_retrieval_candidates(
+        query,
+        [chemistry],
+        query_analysis=scoped,
+    )
+
+    assert not rejected
+    assert scored[0].fragment_id == "chemistry"
+    assert scoped["subject_filter_overridden"] is True
 
 
 def test_section_heading_boosts_relevant_chunk_text():

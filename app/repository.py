@@ -294,6 +294,10 @@ class RagRepository:
         # Keep the user's original casing for proper-name extraction; analyze_query
         # normalizes its lexical signals internally.
         query_analysis = analyze_query(query)
+        query_analysis = _apply_explicit_source_scope(
+            query_analysis,
+            source_uris=source_uris,
+        )
         required_exact_phrases = _required_exact_phrases_for_query(normalized_query)
         expanded_queries = expand_query(
             normalized_query,
@@ -1676,6 +1680,9 @@ ANSWER_CUE_STEMS: dict[str, tuple[str, ...]] = {
         "вследств",
         "потому",
         "поскольку",
+        "благодар",
+        "действи",
+        "объясня",
     ),
     "consequence": (
         "последств",
@@ -3194,6 +3201,22 @@ def select_final_hits(
         and (include_navigation or not hit.is_navigation_index)
     ]
     return mmr_select(apply_adaptive_threshold(eligible), top_k=top_k, query_terms=[])
+
+
+def _apply_explicit_source_scope(
+    query_analysis: dict[str, Any],
+    *,
+    source_uris: list[str] | None,
+) -> dict[str, Any]:
+    if not source_uris:
+        return query_analysis
+    scoped = dict(query_analysis)
+    # An explicit source selection is a stronger routing signal than heuristic
+    # subject detection. Keep the detected subject for diagnostics and query
+    # expansion, but do not let it hard-reject evidence from the chosen source.
+    scoped["subject_confidence"] = 0.0
+    scoped["subject_filter_overridden"] = True
+    return scoped
 
 
 def rerank_by_keyword_relevance(
