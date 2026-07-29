@@ -13,6 +13,7 @@ from typing import Any
 
 from app.config import settings
 from app.mineru_runner import MineruRunError, MineruUnavailableError, check_mineru_env, extract_missing_module, resolve_mineru_python, run_mineru
+from app.ocr_preprocessor import pdf_needs_ocr, preprocess_pdf
 from app.schemas import ParsedElement
 
 
@@ -177,6 +178,42 @@ class RAGAnythingParser:
     def parse_file_with_mode(self, source_uri: str, path: Path, reindex: bool = False) -> tuple[list[ParsedElement], str]:
         if path.suffix.lower() != ".pdf":
             return self._fallback_parse(path), "fallback"
+
+        if settings.ocr_preprocess_enabled:
+            needs_ocr, profile = pdf_needs_ocr(
+                path,
+                sample_pages=settings.ocr_sample_pages,
+                min_chars_per_sample_page=settings.ocr_min_chars_per_sample_page,
+            )
+            logger.info(
+                "pdf_text_profile",
+                extra={
+                    "source_uri": source_uri,
+                    "pages": profile.pages,
+                    "sampled_pages": profile.sampled_pages,
+                    "sampled_text_pages": profile.sampled_text_pages,
+                    "average_chars": round(profile.average_chars, 2),
+                    "needs_ocr": needs_ocr,
+                },
+            )
+            if needs_ocr:
+                ocr_path = preprocess_pdf(path, reindex=reindex)
+                elements = self._fallback_parse(ocr_path)
+                if not elements:
+                    raise RuntimeError(f"OCRmyPDF produced no extractable text: {ocr_path}")
+                enriched = [
+                    element.model_copy(
+                        update={
+                            "meta": {
+                                **element.meta,
+                                "ocr_engine": "tesseract",
+                                "ocr_languages": settings.ocr_languages,
+                            }
+                        }
+                    )
+                    for element in elements
+                ]
+                return enriched, "ocrmypdf"
 
         rag_elements, reason = self._parse_with_mineru(path, reindex=reindex)
         if rag_elements:

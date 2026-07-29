@@ -328,6 +328,13 @@ class Settings(BaseSettings):
 
     mineru_python: str | None = None
     mineru_timeout_seconds: int | None = None
+    ocr_preprocess_enabled: bool = True
+    ocrmypdf_binary: str = "ocrmypdf"
+    ocr_languages: str = "rus+eng"
+    ocr_jobs: int = 4
+    ocr_timeout_seconds: int = 7200
+    ocr_sample_pages: int = 12
+    ocr_min_chars_per_sample_page: int = 80
 
     ingest_path_must_be_under_storage_raw: bool = True
     rate_limit_per_minute: int = 120

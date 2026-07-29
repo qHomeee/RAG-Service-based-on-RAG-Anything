@@ -387,6 +387,12 @@ a large scanned textbook pushed MinerU and two API workers above 7.5 GB and caus
 memory pressure at an 8 GB limit. Its explicit 13 GB memory-plus-swap ceiling permits up to
 4 GB of swap without leaving Docker's default swap policy implicit.
 
+Scanned PDFs are sampled before parsing. When the sampled pages do not contain a usable
+text layer, the production image runs OCRmyPDF/Tesseract with `rus+eng` on CPU and records
+`parse_mode=ocrmypdf`; searchable PDFs continue through MinerU. This is required for Russian
+scans because the bundled MinerU 2.6 pipeline does not provide a Russian OCR language model.
+Tune `OCR_JOBS` to the VPS CPU budget (the shared 8-core profile uses `4`).
+
 - edit `.env.docker` and set `UVICORN_WORKERS` (for example `4`), then restart app:
 
 ```bash

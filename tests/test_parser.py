@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from app.parser import MineruCliCaps, RAGAnythingParser, check_mineru_runtime, log_dependency_compatibility, mineru_run_and_validate, _module_to_package
+from app.ocr_preprocessor import PdfTextProfile
 from app.schemas import ParsedElement
 from app.config import settings
 
@@ -41,6 +42,47 @@ def test_normalize_elements_preserves_markdown_section_breaks():
     elements = parser._normalize_elements([{"type": "text", "text": "# Морфологический разбор\n\nПлан разбора.", "page": 1}])
 
     assert "# Морфологический разбор\n\nПлан разбора." in elements[0].content
+
+
+def test_scanned_pdf_uses_russian_ocr_before_mineru(tmp_path, monkeypatch):
+    parser = RAGAnythingParser()
+    sample = tmp_path / "scan.pdf"
+    sample.write_bytes(b"%PDF-1.4")
+    ocr_pdf = tmp_path / "scan.ocr.pdf"
+    ocr_pdf.write_bytes(b"%PDF-1.7")
+    profile = PdfTextProfile(
+        pages=100,
+        sampled_pages=12,
+        sampled_text_pages=0,
+        sampled_chars=0,
+    )
+
+    monkeypatch.setattr("app.parser.pdf_needs_ocr", lambda *_args, **_kwargs: (True, profile))
+    monkeypatch.setattr("app.parser.preprocess_pdf", lambda *_args, **_kwargs: ocr_pdf)
+    monkeypatch.setattr(
+        parser,
+        "_fallback_parse",
+        lambda _path: [
+            ParsedElement(
+                element_index=0,
+                type="text",
+                content="Распознанный русский текст.",
+                page=1,
+                meta={"fallback": True},
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        parser,
+        "_parse_with_mineru",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("MinerU must not run")),
+    )
+
+    elements, mode = parser.parse_file_with_mode("scan.pdf", sample, reindex=True)
+
+    assert mode == "ocrmypdf"
+    assert elements[0].meta["ocr_engine"] == "tesseract"
+    assert elements[0].meta["ocr_languages"] == "rus+eng"
 
 
 def test_logs_warning_when_mineru_throws(tmp_path, monkeypatch, caplog):

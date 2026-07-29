@@ -51,6 +51,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 \
         libglib2.0-0 \
         libgomp1 \
+        ocrmypdf \
+        tesseract-ocr-eng \
+        tesseract-ocr-rus \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 rag \
     && useradd --uid 10001 --gid rag --create-home --shell /usr/sbin/nologin rag
