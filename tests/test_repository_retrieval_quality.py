@@ -90,6 +90,10 @@ def test_query_terms_keep_numbers_roman_numerals_and_short_terms():
         ("производная функции", "math"),
         ("фотосинтез", "biology"),
         ("митоз клетки", "biology"),
+        ("условия протекания реакций ионного обмена", "chemistry"),
+        ("как устранить жёсткость воды", "chemistry"),
+        ("специализация экономического района", "geography"),
+        ("топливно-энергетический комплекс России", "geography"),
     ],
 )
 def test_query_understanding_detects_subjects(query, subject):
