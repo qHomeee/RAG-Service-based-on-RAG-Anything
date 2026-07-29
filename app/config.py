@@ -215,9 +215,9 @@ class Settings(BaseSettings):
     storage_parsed: str = "storage/parsed"
     redis_url: str | None = None
 
-    max_file_size_mb: int = 50
+    max_file_size_mb: int = 2048
     max_ingest_files: int = 100
-    max_ingest_batch_mb: int = 1000
+    max_ingest_batch_mb: int = 4096
     max_query_chars: int = 4000
     max_top_k: int = 20
     max_source_uris: int = 100
@@ -359,12 +359,12 @@ class Settings(BaseSettings):
     parser_fallback_alert_threshold: float = 0.3
 
     mineru_python: str | None = None
-    mineru_timeout_seconds: int | None = None
+    mineru_timeout_seconds: int | None = 21_600
     ocr_preprocess_enabled: bool = True
     ocrmypdf_binary: str = "ocrmypdf"
     ocr_languages: str = "rus+eng"
     ocr_jobs: int = 4
-    ocr_timeout_seconds: int = 7200
+    ocr_timeout_seconds: int = 21_600
     ocr_sample_pages: int = 12
     ocr_min_chars_per_sample_page: int = 80
     ocr_temp_dir: str = "storage/parsed/.ocr-tmp"

@@ -60,7 +60,10 @@ curl -X POST http://127.0.0.1:8000/ingest \
 ```
 
 Для больших школьных учебников на CPU задайте в `.env.docker`
-`MAX_FILE_SIZE_MB=128` и `MINERU_TIMEOUT_SECONDS=7200`. `/ingest` защищён отдельным
+`MAX_FILE_SIZE_MB=2048`, `MAX_INGEST_BATCH_MB=4096` и
+`MINERU_TIMEOUT_SECONDS=21600`, `OCR_TIMEOUT_SECONDS=21600`. Это разрешает один
+учебник размером до 2 GB;
+`/ingest` защищён отдельным
 admin-ключом, поэтому этот лимит не расширяет публичный retrieval API. В shared-профиле
 контейнер приложения ограничен 9 GB: измеренный пик MinerU вместе с уже прогретыми
 embedding workers составил 8.12 GB, а прежний лимит 8 GB вызывал cgroup memory pressure.

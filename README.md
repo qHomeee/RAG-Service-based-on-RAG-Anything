@@ -389,8 +389,9 @@ keep `UVICORN_WORKERS=2` and `CPU_THREADS_PER_WORKER=3`; four model copies usual
 throughput and leave too little memory for MinerU and PostgreSQL.
 
 For CPU parsing of textbooks with hundreds of pages, keep the admin-only ingest limits
-explicit: `MAX_FILE_SIZE_MB=128`, `MAX_INGEST_BATCH_MB=1000`, and
-`MINERU_TIMEOUT_SECONDS=7200`. The shared VPS profile reserves 9 GB for the app container:
+explicit: `MAX_FILE_SIZE_MB=2048`, `MAX_INGEST_BATCH_MB=4096`, and
+`MINERU_TIMEOUT_SECONDS=21600`/`OCR_TIMEOUT_SECONDS=21600`. The shared VPS profile
+accepts a textbook up to 2 GB and reserves 9 GB for the app container:
 a large textbook pushed MinerU plus warmed embedding workers to a measured 8.12 GB peak;
 the former 8 GB limit caused cgroup memory pressure. Its explicit 13 GB memory-plus-swap
 ceiling permits up to 4 GB of swap without leaving Docker's default swap policy implicit.
