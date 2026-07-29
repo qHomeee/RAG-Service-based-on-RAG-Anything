@@ -77,7 +77,28 @@ def run_mineru(mineru_python: Path, pdf_path: Path, output_dir: Path, *, timeout
     env["DISABLE_MINERU_LLM"] = "1"
 
     start = time.perf_counter()
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired as exc:
+        duration_s = round(time.perf_counter() - start, 3)
+        logger.error(
+            "mineru_timeout",
+            extra={
+                "path": str(pdf_path),
+                "duration_s": duration_s,
+                "timeout_s": timeout_s,
+            },
+        )
+        raise MineruRunError(
+            f"mineru timed out after {timeout_s}s\ncmd={' '.join(cmd)}"
+        ) from exc
     duration_s = round(time.perf_counter() - start, 3)
 
     stdout = (proc.stdout or "").strip()

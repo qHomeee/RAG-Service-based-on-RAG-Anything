@@ -380,6 +380,11 @@ You can change uvicorn workers without rebuilding image. For the target 8-core/1
 keep `UVICORN_WORKERS=2` and `CPU_THREADS_PER_WORKER=3`; four model copies usually reduce
 throughput and leave too little memory for MinerU and PostgreSQL.
 
+For CPU parsing of textbooks with hundreds of pages, keep the admin-only ingest limits
+explicit: `MAX_FILE_SIZE_MB=128`, `MAX_INGEST_BATCH_MB=1000`, and
+`MINERU_TIMEOUT_SECONDS=7200`. The shared VPS profile reserves 8 GB for the app container
+because MinerU and two API workers can exceed 6.6 GB during OCR.
+
 - edit `.env.docker` and set `UVICORN_WORKERS` (for example `4`), then restart app:
 
 ```bash

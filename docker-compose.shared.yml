@@ -1,6 +1,6 @@
 services:
   app:
-    mem_limit: 6g
+    mem_limit: 8g
     cpus: 4.0
     networks:
       default: {}
