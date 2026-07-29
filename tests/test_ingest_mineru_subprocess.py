@@ -1,7 +1,7 @@
 from pathlib import Path
 
+from app.ocr_preprocessor import PdfTextProfile
 from app.parser import RAGAnythingParser
-from app.schemas import ParsedElement
 from app.service import RagService
 
 
@@ -30,6 +30,19 @@ class _FakeRepo:
         return 1
 
 
+def _mock_text_pdf(monkeypatch):
+    profile = PdfTextProfile(
+        pages=1,
+        sampled_pages=1,
+        sampled_text_pages=1,
+        sampled_chars=100,
+    )
+    monkeypatch.setattr(
+        "app.parser.pdf_needs_ocr",
+        lambda *_args, **_kwargs: (False, profile),
+    )
+
+
 def test_ingest_pipeline_uses_mineru_subprocess_output(tmp_path, monkeypatch):
     raw = tmp_path / "raw"
     raw.mkdir()
@@ -37,10 +50,19 @@ def test_ingest_pipeline_uses_mineru_subprocess_output(tmp_path, monkeypatch):
     sample.write_bytes(b"%PDF-1.4")
 
     parser = RAGAnythingParser()
+    _mock_text_pdf(monkeypatch)
 
     def fake_run_mineru(path: Path, *, text_only: bool, reindex: bool = False):
         assert text_only is False
-        return {"elements": [{"type": "text", "text": "Заголовок\n\nТекст документа", "page": 1}]}
+        return {
+            "elements": [
+                {
+                    "type": "text",
+                    "text": "Заголовок\n\nТекст документа",
+                    "page": 1,
+                }
+            ]
+        }
 
     monkeypatch.setattr("app.parser.check_mineru_env", lambda _py: (True, "ok"))
     monkeypatch.setattr("app.parser.resolve_mineru_python", lambda: Path("python"))
@@ -64,10 +86,19 @@ def test_reindex_can_reuse_successful_parse_artifacts(tmp_path, monkeypatch):
     sample.write_bytes(b"%PDF-1.4")
 
     parser = RAGAnythingParser()
+    _mock_text_pdf(monkeypatch)
 
     def fake_run_mineru(path: Path, *, text_only: bool, reindex: bool = False):
         assert reindex is False
-        return {"elements": [{"type": "text", "text": "Готовый результат MinerU", "page": 1}]}
+        return {
+            "elements": [
+                {
+                    "type": "text",
+                    "text": "Готовый результат MinerU",
+                    "page": 1,
+                }
+            ]
+        }
 
     monkeypatch.setattr("app.parser.check_mineru_env", lambda _py: (True, "ok"))
     monkeypatch.setattr("app.parser.resolve_mineru_python", lambda: Path("python"))
