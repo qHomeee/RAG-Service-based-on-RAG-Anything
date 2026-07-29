@@ -19,3 +19,9 @@ def test_detect_subject_from_transliterated_filename():
     )
 
     assert detected[0]["subject"] == "geography"
+
+
+def test_detect_subjects_from_final_textbook_queries():
+    assert detect_subjects("Какими средствами выражается сравнение?")[0]["subject"] == "russian_language"
+    assert detect_subjects("Почему выпадает чёрный осадок сульфида меди?")[0]["subject"] == "chemistry"
+    assert detect_subjects("Как автомобильный транспорт загрязняет окружающую среду?")[0]["subject"] == "geography"

@@ -2027,10 +2027,27 @@ def _metadata_with_inferred_section(row: RetrievalRow) -> dict[str, Any]:
         else section_details.get("section_title_reason")
     )
     meta["section_path"] = section_path
-    chunk_source = str(meta.get("search_text") or row.text or row.snippet or "")
-    chunk_details = detect_chunk_type_details(chunk_source, meta=meta, page=row.page)
-    meta["chunk_type"] = meta.get("chunk_type") or chunk_details.get("chunk_type", "unknown")
-    meta["chunk_type_reason"] = meta.get("chunk_type_reason") or chunk_details.get("chunk_type_reason")
+    chunk_source = str(row.text or row.snippet or "")
+    chunk_details = detect_chunk_type_details(chunk_source, meta={}, page=row.page)
+    detected_chunk_type = str(chunk_details.get("chunk_type") or "unknown")
+    indexed_chunk_type = str(meta.get("chunk_type") or "unknown")
+    hard_filter_types = {"navigation_index", "toc", "index", "bibliography"}
+    stale_hard_type = (
+        indexed_chunk_type in hard_filter_types
+        and detected_chunk_type not in hard_filter_types
+        and detected_chunk_type != "unknown"
+    )
+    if detected_chunk_type in hard_filter_types or stale_hard_type:
+        meta["chunk_type"] = detected_chunk_type
+        meta["chunk_type_reason"] = chunk_details.get("chunk_type_reason")
+    else:
+        meta["chunk_type"] = meta.get("chunk_type") or detected_chunk_type
+        meta["chunk_type_reason"] = meta.get("chunk_type_reason") or chunk_details.get("chunk_type_reason")
+    if stale_hard_type:
+        meta["is_toc"] = False
+        meta["low_text_quality"] = False
+        meta["low_text_quality_reason"] = None
+        meta["quality_score"] = max(float(meta.get("quality_score") or 0.0), 0.75)
     meta["is_navigation_index"] = meta["chunk_type"] == "navigation_index"
     return meta
 
@@ -2046,8 +2063,31 @@ def _candidate_subject_score(query_analysis: dict[str, Any], row: RetrievalRow) 
 
 
 def _candidate_quality(row: RetrievalRow) -> dict[str, Any]:
-    flags = text_quality_flags(row.text or row.snippet or "", page=row.page, meta=row.meta)
+    evidence_text = row.text or row.snippet or ""
+    flags = text_quality_flags(evidence_text, page=row.page, meta={})
     meta = row.meta or {}
+    chunk_details = detect_chunk_type_details(evidence_text, meta={}, page=row.page)
+    detected_chunk_type = str(chunk_details.get("chunk_type") or "unknown")
+    indexed_chunk_type = str(meta.get("chunk_type") or "unknown")
+    hard_filter_types = {"navigation_index", "toc", "index", "bibliography"}
+    runtime_hard = bool(
+        detected_chunk_type in hard_filter_types
+        or flags.get("is_toc")
+        or flags.get("is_index")
+        or flags.get("is_bibliography")
+    )
+    indexed_hard = bool(
+        indexed_chunk_type in hard_filter_types
+        or meta.get("is_toc") is True
+        or meta.get("is_index") is True
+        or meta.get("is_bibliography") is True
+        or meta.get("is_navigation_index") is True
+    )
+    stale_hard_metadata = bool(
+        indexed_hard
+        and not runtime_hard
+        and detected_chunk_type != "unknown"
+    )
     for key in (
         "is_toc",
         "is_index",
@@ -2058,23 +2098,29 @@ def _candidate_quality(row: RetrievalRow) -> dict[str, Any]:
         "starts_mid_word",
         "low_text_quality",
     ):
-        if meta.get(key) is True:
+        if meta.get(key) is True and not (
+            stale_hard_metadata
+            and key in {"is_toc", "is_index", "is_bibliography", "low_text_quality"}
+        ):
             flags[key] = True
-    if "quality_score" in meta:
+    if "quality_score" in meta and not stale_hard_metadata:
         try:
             flags["quality_score"] = min(float(flags.get("quality_score", 1.0)), float(meta["quality_score"]))
         except (TypeError, ValueError):
             pass
-    chunk_details = detect_chunk_type_details(row.text or row.snippet or "", meta=meta, page=row.page)
-    detected_chunk_type = str(chunk_details.get("chunk_type") or "unknown")
-    hard_filter_types = {"navigation_index", "toc", "index", "bibliography"}
     if detected_chunk_type in hard_filter_types:
+        flags["chunk_type"] = detected_chunk_type
+        flags["chunk_type_reason"] = chunk_details.get("chunk_type_reason")
+    elif stale_hard_metadata:
         flags["chunk_type"] = detected_chunk_type
         flags["chunk_type_reason"] = chunk_details.get("chunk_type_reason")
     else:
         flags["chunk_type"] = meta.get("chunk_type") or detected_chunk_type
         flags["chunk_type_reason"] = meta.get("chunk_type_reason") or chunk_details.get("chunk_type_reason")
-    flags["is_navigation_index"] = bool(meta.get("is_navigation_index") is True or flags["chunk_type"] == "navigation_index")
+    flags["is_navigation_index"] = bool(
+        flags["chunk_type"] == "navigation_index"
+        or (meta.get("is_navigation_index") is True and not stale_hard_metadata)
+    )
     if flags.get("low_text_quality"):
         flags["quality_score"] = min(float(flags.get("quality_score", 1.0)), 0.25)
     return flags
@@ -2117,6 +2163,16 @@ def _penalties_applied(
 
 def _is_toc_fragment(row: RetrievalRow) -> bool:
     if (row.meta or {}).get("is_toc") is True:
+        runtime_type = str(
+            detect_chunk_type_details(
+                row.text or row.snippet or "",
+                meta={},
+                page=row.page,
+            ).get("chunk_type")
+            or "unknown"
+        )
+        if runtime_type not in {"navigation_index", "toc", "index", "bibliography", "unknown"}:
+            return False
         return True
     return is_toc_text(row.text or row.snippet or "", page=row.page)
 
@@ -2645,6 +2701,10 @@ def score_retrieval_candidates(
         )
         reason = _noise_rejection_reason(
             query_terms=query_terms,
+            unscoped_unknown_subject=bool(
+                str(query_analysis.get("primary_subject") or "unknown") == "unknown"
+                and not query_analysis.get("subject_filter_overridden")
+            ),
             dense_score=dense_score,
             lexical_score=lexical_score,
             lexical_overlap_score=overlap,
@@ -2787,6 +2847,7 @@ def _effective_document_score(
 def _noise_rejection_reason(
     *,
     query_terms: list[str],
+    unscoped_unknown_subject: bool,
     dense_score: float,
     lexical_score: float,
     lexical_overlap_score: float,
@@ -2810,6 +2871,19 @@ def _noise_rejection_reason(
         return None
     lexical_component = max(lexical_score, lexical_overlap_score, phrase_score)
     rerank_component = rerank_score or 0.0
+    if (
+        unscoped_unknown_subject
+        and len(query_terms) >= 3
+        and lexical_overlap_score < 0.34
+        and phrase_score < 0.2
+        and anchor_score < 0.34
+        and topic_score < 0.34
+    ):
+        # A cross-encoder can be overconfident about a single generic word
+        # ("transition", "transmission", "production"). When the corpus router
+        # cannot identify a supported subject, require evidence for at least
+        # two independent query terms before returning a fragment.
+        return "out_of_domain_low_evidence"
     if subject_confidence >= settings.retrieval_subject_confidence_threshold and subject_score <= settings.retrieval_subject_mismatch_score:
         return "subject_mismatch"
     if wrong_entity_modifier and final_score < settings.default_min_score:
@@ -2881,10 +2955,19 @@ def apply_adaptive_threshold(hits: list[RetrievalRow]) -> list[RetrievalRow]:
             or current.required_term_score >= 0.8
             or (current.phrase_score >= 0.9 and current.lexical_overlap >= 0.67)
         )
-        semantic_anchor = anchor_signal and (
+        strong_lexical_anchor = bool(
+            current.lexical_overlap >= 0.8
+            and current.lexical_score >= 0.7
+            and current.phrase_score >= 0.55
+            and float(current.rerank_score or 0.0) >= 0.4
+            and not current.low_text_quality
+            and not current.is_toc
+            and not current.is_navigation_index
+        )
+        semantic_anchor = strong_lexical_anchor or (anchor_signal and (
             current.chunk_type not in {"exercise", "test_question", "navigation_index", "toc"}
             or current.expanded_from_neighbors
-        )
+        ))
         if semantic_anchor:
             kept.append(current)
             continue
@@ -3105,7 +3188,8 @@ def expand_query(
     query_analysis = query_analysis or analyze_query(query)
     terms = _query_terms_for_scoring(query)
     answer_focus = str(query_analysis.get("answer_focus") or "none")
-    if len(terms) > 4 and answer_focus == "none":
+    subject_expansions = subject_expansions_for_query(query_analysis)
+    if len(terms) > 4 and answer_focus == "none" and not subject_expansions:
         return queries
 
     query_synonyms, topic_expansions = _expansion_maps(collection=collection, source_uris=source_uris)
@@ -3117,7 +3201,7 @@ def expand_query(
     for key, topic_terms in topic_expansions.items():
         if key in query:
             extra_terms.extend(topic_terms)
-    extra_terms.extend(subject_expansions_for_query(query_analysis))
+    extra_terms.extend(subject_expansions)
 
     focus_terms = ANSWER_FOCUS_QUERY_EXPANSIONS.get(answer_focus, ())
     if focus_terms:

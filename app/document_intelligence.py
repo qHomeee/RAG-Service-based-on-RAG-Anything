@@ -133,10 +133,14 @@ ANSWER_FOCUS_STEMS: dict[str, tuple[str, ...]] = {
 QUERY_INITIAL_NON_ENTITIES = {
     "в",
     "для",
+    "от",
     "как",
     "какая",
     "какие",
+    "каким",
+    "какими",
     "какой",
+    "какую",
     "каков",
     "какова",
     "каково",
@@ -244,6 +248,40 @@ DEFINITION_MARKERS = {
     "представляет собой",
     "определение",
     "означает",
+}
+
+SUBSTANTIVE_EXPOSITION_MARKERS = {
+    "является",
+    "являются",
+    "называется",
+    "называют",
+    "образуется",
+    "образуются",
+    "происходит",
+    "происходят",
+    "используется",
+    "используются",
+    "характерны",
+    "так как",
+    "потому что",
+    "в результате",
+    "например",
+    "производство",
+    "производства",
+    "размещают",
+    "влияет",
+}
+
+SUBSTANTIVE_INSTRUCTION_MARKERS = {
+    "определить",
+    "подчеркнуть",
+    "указать",
+    "выделить",
+    "объяснить",
+    "разобрать",
+    "построить",
+    "назвать",
+    "выяснить",
 }
 
 
@@ -578,6 +616,8 @@ def subject_expansions_for_query(query_analysis: dict[str, Any]) -> list[str]:
 def is_toc_text(text: str, page: int | None = None) -> bool:
     normalized = normalize_for_matching(text)
     marker_found = any(marker in normalized[:300] for marker in ("оглавление", "содержание", "contents"))
+    if _has_substantive_exposition(text):
+        return False
     if marker_found:
         return True
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
@@ -896,6 +936,8 @@ def _looks_like_navigation_index(text: str, *, page: int | None = None) -> bool:
     tokens = tokenize(normalized)
     if not tokens:
         return False
+    if _has_substantive_exposition(text):
+        return False
     marker_found = any(_phrase_match(marker, normalized[:220]) for marker in NAVIGATION_MARKERS)
     page_numbers = re.findall(r"(?<!\d)([1-9]\d{0,2})(?!\d)", normalized)
     flat_entries = _flat_toc_entry_count(normalized)
@@ -917,6 +959,29 @@ def _looks_like_navigation_index(text: str, *, page: int | None = None) -> bool:
     if early_page and flat_entries >= 5 and coherent_ratio <= 0.35:
         return True
     return False
+
+
+def _has_substantive_exposition(text: str) -> bool:
+    normalized = normalize_for_matching(text)
+    tokens = tokenize(normalized)
+    if len(tokens) < 45:
+        return False
+    exposition_hits = sum(
+        1
+        for marker in SUBSTANTIVE_EXPOSITION_MARKERS
+        if _phrase_match(marker, normalized)
+    )
+    instruction_hits = sum(
+        1
+        for marker in SUBSTANTIVE_INSTRUCTION_MARKERS
+        if _phrase_match(marker, normalized)
+    )
+    sentence_boundaries = len(re.findall(r"[.!?;:](?:\s|$)", text or ""))
+    return bool(
+        instruction_hits >= 2
+        or exposition_hits >= 2
+        or (len(tokens) >= 90 and sentence_boundaries >= 3)
+    )
 
 
 def _clean_section_title(text: str) -> tuple[str | None, str | None]:

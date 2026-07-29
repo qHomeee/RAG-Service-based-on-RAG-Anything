@@ -98,3 +98,28 @@ def test_expand_query_recognizes_implicit_goal_wording():
         and "добивались" not in variant
         for variant in variants[1:]
     )
+
+
+def test_expand_query_adds_final_textbook_evidence_terms():
+    cases = [
+        (
+            "Какими средствами выражается сравнение?",
+            "russian_language",
+            ("сравнительный оборот", "придаточное сравнения"),
+        ),
+        (
+            "Как автомобильный транспорт загрязняет окружающую среду?",
+            "geography",
+            ("автотранспорт", "выбросы"),
+        ),
+        (
+            "Как получить чёрный осадок сульфида меди?",
+            "chemistry",
+            ("хлорид меди", "сульфид натрия"),
+        ),
+    ]
+
+    for query, _subject, expected_terms in cases:
+        variants = expand_query(query.lower())
+        joined = " ".join(variants)
+        assert all(term in joined for term in expected_terms)

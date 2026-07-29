@@ -17,6 +17,7 @@ from app.repository import (
     RetrievalRow,
     MAX_DB_SNIPPET_CHARS,
     _bm25_scores,
+    _candidate_quality,
     _normalize_rerank_scores,
     _metadata_with_inferred_section,
     _apply_explicit_source_scope,
@@ -192,6 +193,19 @@ def test_query_understanding_does_not_treat_kakovy_as_an_entity():
 
     assert analysis["named_entities"] == ["Младотурецкой"]
     assert analysis["required_entities"] == ["Младотурецкой"]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Какими средствами выражается сравнение?",
+        "От чего зависит выбор знака препинания в бессоюзном предложении?",
+    ],
+)
+def test_query_understanding_does_not_treat_question_openers_as_entities(query):
+    analysis = analyze_query(query)
+
+    assert analysis["required_entities"] == []
 
 
 def test_query_understanding_recognizes_implicit_goal_wording():
@@ -1352,6 +1366,70 @@ def test_flat_table_of_contents_page_is_detected_and_excluded_from_final_hits():
     assert selected[0].fragment_id == "content"
 
 
+def test_numbered_exposition_is_not_misclassified_as_table_of_contents():
+    text = (
+        "Факторы размещения металлургических предприятий. "
+        "1. Материалоёмкость производства является главным фактором: предприятия "
+        "размещают вблизи источников сырья, так как перевозка руды увеличивает затраты. "
+        "2. Производство использует много топлива и воды, поэтому учитывается "
+        "энергетический фактор. Например, комбинаты полного цикла тяготеют к районам "
+        "добычи железной руды и коксующегося угля. В результате складываются крупные "
+        "металлургические базы России. Данные в таблице 12 показывают долю сырья 40, "
+        "топлива 25 и электроэнергии 18 процентов."
+    )
+
+    assert is_toc_text(text, page=40) is False
+    assert detect_chunk_type(text, page=40) not in {"navigation_index", "toc"}
+    assert text_quality_flags(text, page=40)["low_text_quality"] is False
+
+
+def test_substantive_numbered_plan_is_not_navigation():
+    text = (
+        "План синтаксического разбора сложноподчинённого предложения. "
+        "1. Определить вид предложения по цели высказывания и эмоциональной окраске. "
+        "2. Выделить грамматические основы и указать средства связи частей. "
+        "3. Назвать главное и придаточное предложения. "
+        "4. Объяснить расположение придаточного и расстановку знаков препинания. "
+        "5. Построить схему предложения. "
+        "6. Разобрать каждую часть как простое предложение."
+    )
+
+    assert detect_chunk_type(text, page=280) == "schema_or_plan"
+    assert text_quality_flags(text, page=280)["low_text_quality"] is False
+
+
+def test_runtime_content_overrides_stale_hard_index_metadata():
+    text = (
+        "План синтаксического разбора сложноподчинённого предложения. "
+        "1. Определить вид предложения. 2. Выделить грамматические основы. "
+        "3. Указать главное и придаточное предложения. 4. Объяснить знаки препинания. "
+        "5. Построить схему. 6. Разобрать каждую часть предложения. "
+        "Этот порядок используется для полного письменного разбора и помогает "
+        "последовательно установить строение сложного предложения."
+    )
+    row = _row("stale-plan", 0.7, text, "russian.pdf")
+    row.page = 280
+    row.meta = {
+        "is_toc": True,
+        "low_text_quality": True,
+        "quality_score": 0.25,
+        "chunk_type": "navigation_index",
+        "is_navigation_index": True,
+    }
+
+    metadata = _metadata_with_inferred_section(row)
+    quality = _candidate_quality(row)
+
+    assert metadata["chunk_type"] == "schema_or_plan"
+    assert metadata["is_toc"] is False
+    assert metadata["is_navigation_index"] is False
+    assert quality["chunk_type"] == "schema_or_plan"
+    assert quality["is_toc"] is False
+    assert quality["is_navigation_index"] is False
+    assert quality["low_text_quality"] is False
+    assert quality["quality_score"] >= 0.75
+
+
 def test_low_quality_fragmented_chunk_is_filtered_from_final_hits():
     query = "Морфологический разбор"
     broken = _row("broken", 0.9, "пинания. Выполните морфологический разбор причастий.", "russian.pdf")
@@ -1456,6 +1534,65 @@ def test_anti_noise_filter_drops_zero_overlap_low_dense_candidates():
     assert [row.fragment_id for row in scored] == ["history"]
     assert rejected[0]["fragment_id"] == "noise"
     assert rejected[0]["rejection_reason"] in {"low_lexical_overlap", "low_document_score"}
+
+
+def test_unknown_subject_rejects_single_generic_word_despite_high_reranker_score():
+    candidate = _row(
+        "swiftui-transition",
+        0.62,
+        "Переход от одной общественной формации к другой происходит в результате революции.",
+        "history.pdf",
+    )
+
+    scored, rejected = score_retrieval_candidates(
+        "Как реализовать анимацию перехода экрана в SwiftUI?",
+        [candidate],
+        rerank_raw_scores=[10.0],
+    )
+
+    assert scored == []
+    assert rejected[0]["rejection_reason"] == "out_of_domain_low_evidence"
+
+
+def test_unknown_subject_keeps_well_supported_corpus_evidence():
+    candidate = _row(
+        "local-topic",
+        0.62,
+        (
+            "Редкий локальный термин «кварцитизация» описывает кварцитизацию породы. "
+            "Процесс кварцитизации подробно рассматривается в этом разделе учебника."
+        ),
+        "local.pdf",
+    )
+
+    scored, rejected = score_retrieval_candidates(
+        "Что означает редкий локальный термин кварцитизация?",
+        [candidate],
+        rerank_raw_scores=[10.0],
+    )
+
+    assert rejected == []
+    assert scored[0].fragment_id == "local-topic"
+
+
+def test_explicit_source_scope_bypasses_unknown_subject_ood_gate():
+    candidate = _row(
+        "scoped-transition",
+        0.62,
+        "Переход от одной общественной формации к другой происходит в результате революции.",
+        "history.pdf",
+    )
+    analysis = analyze_query("Как реализовать анимацию перехода экрана в SwiftUI?")
+    analysis["subject_filter_overridden"] = True
+
+    scored, rejected = score_retrieval_candidates(
+        "Как реализовать анимацию перехода экрана в SwiftUI?",
+        [candidate],
+        rerank_raw_scores=[10.0],
+        query_analysis=analysis,
+    )
+
+    assert all(item["rejection_reason"] != "out_of_domain_low_evidence" for item in rejected)
 
 
 def test_dense_only_candidate_cannot_receive_high_final_score():
@@ -1574,6 +1711,28 @@ def test_adaptive_threshold_cuts_score_tail():
     selected = apply_adaptive_threshold(hits)
 
     assert [hit.fragment_id for hit in selected] == ["a", "b"]
+
+
+def test_adaptive_threshold_keeps_strong_lexical_answer_below_score_tail():
+    head = _row("head", 0.9, "Общее объяснение темы")
+    head.final_score = 0.9
+    answer = _row(
+        "answer",
+        0.72,
+        "Придаточные предложения могут быть синтаксическими синонимами членов простого предложения.",
+    )
+    answer.final_score = 0.38
+    answer.lexical_overlap = 0.86
+    answer.lexical_score = 0.84
+    answer.phrase_score = 0.68
+    answer.rerank_score = 0.48
+    answer.chunk_type = "explanatory"
+    tail = _row("tail", 0.3, "Слабое совпадение")
+    tail.final_score = 0.3
+
+    selected = apply_adaptive_threshold([head, answer, tail])
+
+    assert [hit.fragment_id for hit in selected] == ["head", "answer"]
 
 
 def test_mmr_keeps_relevant_results_but_reduces_duplicates():
