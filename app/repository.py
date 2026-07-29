@@ -305,6 +305,13 @@ class RagRepository:
             source_uris=source_uris,
             query_analysis=query_analysis,
         )
+        prerank_terms = list(
+            dict.fromkeys(
+                term
+                for expanded_query in expanded_queries
+                for term in _query_terms_for_scoring(expanded_query)
+            )
+        )
         min_score = _clamp_score(min_score)
         recall_top_n = max(top_k, settings.vector_recall_top_n)
 
@@ -395,7 +402,22 @@ class RagRepository:
         rerank_candidates = _balanced_prerank(
             fused_candidates,
             limit=rerank_limit,
-            query_terms=query_terms,
+            query_terms=prerank_terms,
+            query_term_groups=[
+                group
+                for group in (
+                    query_terms,
+                    *(
+                        [
+                            term
+                            for term in _query_terms_for_scoring(expanded_query)
+                            if term not in set(query_terms)
+                        ]
+                        for expanded_query in expanded_queries[1:]
+                    ),
+                )
+                if group
+            ],
         )
         self._hydrate_fragment_metadata(rerank_candidates)
         rerank_candidates = self._expand_context(rerank_candidates)
@@ -1128,26 +1150,33 @@ def _balanced_prerank(
     *,
     limit: int,
     query_terms: list[str],
+    query_term_groups: list[list[str]] | None = None,
 ) -> list[RetrievalRow]:
     """Keep both semantic and lexical recall paths represented in the CPU rerank pool."""
     if limit <= 0:
         return []
     combined = _cheap_prerank(candidates)
+    term_groups = [group for group in (query_term_groups or [query_terms]) if group]
+
+    def local_overlap(row: RetrievalRow) -> float:
+        evidence = " ".join(
+            str(value)
+            for value in (
+                row.text,
+                (row.meta or {}).get("section_title"),
+                " ".join(str(item) for item in ((row.meta or {}).get("section_path") or [])),
+            )
+            if value
+        )
+        return max(
+            (lexical_overlap(group, evidence) for group in term_groups),
+            default=0.0,
+        )
+
     lexical = sorted(
-        (row for row in candidates if row.lexical_score > 0.0),
+        candidates,
         key=lambda row: (
-            lexical_overlap(
-                query_terms,
-                " ".join(
-                    str(value)
-                    for value in (
-                        row.text,
-                        (row.meta or {}).get("section_title"),
-                        " ".join(str(item) for item in ((row.meta or {}).get("section_path") or [])),
-                    )
-                    if value
-                ),
-            ),
+            local_overlap(row),
             row.lexical_score,
             row.rrf_score,
             row.dense_score,
@@ -3204,7 +3233,17 @@ def expand_query(
     extra_terms.extend(subject_expansions)
 
     focus_terms = ANSWER_FOCUS_QUERY_EXPANSIONS.get(answer_focus, ())
-    if focus_terms:
+    if (
+        answer_focus == "cause"
+        and str(query_analysis.get("primary_subject") or "unknown") != "history"
+    ):
+        focus_terms = ("причина", "объясняется", "связано", "обусловлено")
+    skip_generic_non_history_cause = bool(
+        answer_focus == "cause"
+        and subject_expansions
+        and str(query_analysis.get("primary_subject") or "unknown") != "history"
+    )
+    if focus_terms and not skip_generic_non_history_cause:
         intent_stems = ANSWER_FOCUS_STEMS.get(answer_focus, ())
         focused_topic_terms = [
             term

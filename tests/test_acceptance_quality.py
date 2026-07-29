@@ -109,3 +109,85 @@ def test_acceptance_eval_requires_terms_within_labeled_page():
     )
 
     assert report["evidence_recall_at_k"] == 0.0
+
+
+def test_acceptance_eval_checks_the_returned_full_fragment_not_neighbor_context():
+    class ExpandedRepository:
+        def retrieve(self, **kwargs):
+            return [
+                SimpleNamespace(
+                    fragment_id="right-fragment",
+                    source_uri="book.pdf",
+                    page=12,
+                    text="Соседний контекст без ответа.",
+                    fragment_text=(
+                        "Выбор знака препинания зависит от смысловых отношений "
+                        "между частями бессоюзного предложения."
+                    ),
+                    snippet="Выбор знака препинания",
+                    final_score=0.7,
+                )
+            ]
+
+    report = run_acceptance_eval(
+        repository=ExpandedRepository(),
+        eval_set=[
+            {
+                "query": "От чего зависит выбор знака?",
+                "expected_source": "book.pdf",
+                "expected_pages": [12],
+                "expected_terms": ["знак", "смыслов"],
+            }
+        ],
+        collection="default",
+        top_k=5,
+        min_score=0.2,
+    )
+
+    assert report["evidence_recall_at_k"] == 1.0
+
+
+def test_acceptance_eval_checks_structured_exact_neighbor_fragments_with_own_pages():
+    class ContextRepository:
+        def retrieve(self, **kwargs):
+            return [
+                SimpleNamespace(
+                    fragment_id="anchor",
+                    source_uri="book.pdf",
+                    page=159,
+                    text="Opaque expanded context must not define the evidence page.",
+                    fragment_text="Anchor text on page 159.",
+                    snippet="legacy context",
+                    meta={
+                        "context_fragments": [
+                            {
+                                "fragment_id": "exact-neighbor",
+                                "page": 160,
+                                "element_index": 10,
+                                "text": (
+                                    "В Поволжье металлургические предприятия "
+                                    "сосредоточены в Волгоградской и Саратовской областях."
+                                ),
+                            }
+                        ]
+                    },
+                    final_score=0.7,
+                )
+            ]
+
+    report = run_acceptance_eval(
+        repository=ContextRepository(),
+        eval_set=[
+            {
+                "query": "Где предприятия Поволжья?",
+                "expected_source": "book.pdf",
+                "expected_pages": [160],
+                "expected_terms": ["поволж", "металлург"],
+            }
+        ],
+        collection="default",
+        top_k=5,
+        min_score=0.2,
+    )
+
+    assert report["evidence_recall_at_k"] == 1.0

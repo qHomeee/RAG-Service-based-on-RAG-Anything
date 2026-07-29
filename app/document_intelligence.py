@@ -27,6 +27,7 @@ _STOPWORDS = {
     "в",
     "во",
     "для",
+    "где",
     "до",
     "его",
     "ее",
@@ -133,6 +134,7 @@ ANSWER_FOCUS_STEMS: dict[str, tuple[str, ...]] = {
 QUERY_INITIAL_NON_ENTITIES = {
     "в",
     "для",
+    "где",
     "от",
     "как",
     "какая",
@@ -270,6 +272,10 @@ SUBSTANTIVE_EXPOSITION_MARKERS = {
     "производства",
     "размещают",
     "влияет",
+    "выбрасывает",
+    "составляет",
+    "занимает",
+    "увеличивает",
 }
 
 SUBSTANTIVE_INSTRUCTION_MARKERS = {
@@ -282,6 +288,14 @@ SUBSTANTIVE_INSTRUCTION_MARKERS = {
     "построить",
     "назвать",
     "выяснить",
+    "получить",
+    "получите",
+    "добавить",
+    "добавьте",
+    "наблюдать",
+    "наблюдайте",
+    "записать",
+    "запишите",
 }
 
 
@@ -356,6 +370,8 @@ def detect_query_type(normalized_query: str, primary_subject: str) -> str:
         return "problem_solving"
     if tokens & RULE_LOOKUP_TERMS:
         return "rule_lookup"
+    if tokens & {"где", "куда", "откуда"}:
+        return "explanation"
     if detect_answer_focus(normalized_query) != "none":
         return "explanation"
     if tokens & EXPLANATION_TERMS:
@@ -980,7 +996,7 @@ def _has_substantive_exposition(text: str) -> bool:
     return bool(
         instruction_hits >= 2
         or exposition_hits >= 2
-        or (len(tokens) >= 90 and sentence_boundaries >= 3)
+        or (exposition_hits >= 1 and len(tokens) >= 90 and sentence_boundaries >= 3)
     )
 
 

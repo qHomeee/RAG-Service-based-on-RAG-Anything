@@ -243,12 +243,31 @@ def _matches_acceptance_evidence(
 ) -> bool:
     if row.source_uri != expected_source:
         return False
-    if expected_pages and getattr(row, "page", None) not in expected_pages:
-        return False
-    haystack = f"{getattr(row, 'text', '')} {getattr(row, 'snippet', '')}".casefold()
-    if expected_terms and not all(term in haystack for term in expected_terms):
-        return False
-    return bool(expected_pages or expected_terms)
+    meta = getattr(row, "meta", None) or {}
+    exact_fragments: list[tuple[int | None, str]] = [
+        (
+            getattr(row, "page", None),
+            str(getattr(row, "fragment_text", None) or getattr(row, "text", "")),
+        )
+    ]
+    for fragment in meta.get("context_fragments") or []:
+        if not isinstance(fragment, dict):
+            continue
+        exact_fragments.append(
+            (
+                fragment.get("page"),
+                str(fragment.get("text") or ""),
+            )
+        )
+
+    for page, fragment_text in exact_fragments:
+        if expected_pages and page not in expected_pages:
+            continue
+        haystack = fragment_text.casefold()
+        if expected_terms and not all(term in haystack for term in expected_terms):
+            continue
+        return bool(expected_pages or expected_terms)
+    return False
 
 
 def _acceptance_hit_payload(row) -> dict:

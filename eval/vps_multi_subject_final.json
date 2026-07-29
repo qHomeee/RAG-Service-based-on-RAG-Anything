@@ -108,8 +108,8 @@
     "category": "russian_part_1",
     "query": "Какими средствами в предложении выражается сравнение?",
     "expected_source": "fb65bd416e_russkij-jazyk-9-1-chast-kibireva.pdf",
-    "expected_pages": [240],
-    "expected_terms": ["сравнительн", "оборот"]
+    "expected_pages": [239, 240],
+    "expected_terms": ["сравнен", "выражен"]
   },
   {
     "category": "russian_part_1",

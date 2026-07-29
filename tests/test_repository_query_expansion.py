@@ -123,3 +123,21 @@ def test_expand_query_adds_final_textbook_evidence_terms():
         variants = expand_query(query.lower())
         joined = " ".join(variants)
         assert all(term in joined for term in expected_terms)
+
+
+def test_non_history_cause_expansion_does_not_add_history_specific_terms():
+    variants = expand_query("почему автомобильный транспорт загрязняет воздух")
+    joined = " ".join(variants)
+
+    assert len(variants) == 2
+    assert "окись углерода" in joined
+    assert "кризис" not in joined
+    assert "оппозиция" not in joined
+
+
+def test_geography_location_expansion_adds_placement_synonym():
+    variants = expand_query(
+        "где сосредоточены металлургические предприятия поволжья"
+    )
+
+    assert any("сконцентрированы" in variant for variant in variants[1:])

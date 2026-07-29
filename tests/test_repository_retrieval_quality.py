@@ -17,6 +17,7 @@ from app.repository import (
     RetrievalRow,
     MAX_DB_SNIPPET_CHARS,
     _bm25_scores,
+    _balanced_prerank,
     _candidate_quality,
     _normalize_rerank_scores,
     _metadata_with_inferred_section,
@@ -213,6 +214,16 @@ def test_query_understanding_recognizes_implicit_goal_wording():
 
     assert analysis["query_type"] == "explanation"
     assert analysis["answer_focus"] == "goal"
+
+
+def test_location_question_is_explanation_not_required_concept_phrase():
+    analysis = analyze_query(
+        "Где сосредоточены металлургические предприятия Поволжья?"
+    )
+
+    assert analysis["query_type"] == "explanation"
+    assert analysis["required_terms"] == []
+    assert "Где" not in analysis["required_entities"]
 
 
 def test_cause_alignment_does_not_reward_reversed_consequence():
@@ -1463,6 +1474,41 @@ def test_multi_query_fusion_uses_weighted_max_score():
     assert set(merged) == {"a", "b", "c"}
     assert merged["a"][0] == 1.0
     assert merged["c"][0] == pytest.approx(0.72)
+
+
+def test_balanced_prerank_uses_expansion_terms_for_dense_only_candidate():
+    generic = []
+    for idx in range(8):
+        row = _row(
+            f"generic-{idx}",
+            0.75,
+            "Общие сведения о предложении и средствах связи.",
+        )
+        row.rrf_score = 0.95 - idx * 0.01
+        row.lexical_score = 0.8
+        generic.append(row)
+    answer = _row(
+        "comparison-answer",
+        0.68,
+        (
+            "Сравнение выражается именем существительным, сравнительной степенью "
+            "и сравнительным оборотом."
+        ),
+    )
+    answer.rrf_score = 0.5
+    answer.lexical_score = 0.0
+
+    selected = _balanced_prerank(
+        [*generic, answer],
+        limit=6,
+        query_terms=["сравнение", "выражается"],
+        query_term_groups=[
+            ["сравнение", "выражается"],
+            ["сравнительный", "оборот", "степень"],
+        ],
+    )
+
+    assert "comparison-answer" in {row.fragment_id for row in selected}
 
 
 def test_keyword_rerank_penalizes_irrelevant_hits_without_query_hardcode():
