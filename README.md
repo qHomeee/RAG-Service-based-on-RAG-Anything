@@ -391,7 +391,9 @@ Scanned PDFs are sampled before parsing. When the sampled pages do not contain a
 text layer, the production image runs OCRmyPDF/Tesseract with `rus+eng` on CPU and records
 `parse_mode=ocrmypdf`; searchable PDFs continue through MinerU. This is required for Russian
 scans because the bundled MinerU 2.6 pipeline does not provide a Russian OCR language model.
-Tune `OCR_JOBS` to the VPS CPU budget (the shared 8-core profile uses `4`).
+Tune `OCR_JOBS` to the VPS CPU budget (the shared 8-core profile uses `4`). OCR working
+files use `/app/storage/parsed/.ocr-tmp`, not the security-limited `/tmp` tmpfs; ingestion
+fails early unless that filesystem has at least `OCR_MIN_TEMP_FREE_MB=4096` available.
 
 - edit `.env.docker` and set `UVICORN_WORKERS` (for example `4`), then restart app:
 

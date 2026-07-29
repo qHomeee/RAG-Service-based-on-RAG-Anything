@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import time
@@ -74,6 +75,16 @@ def preprocess_pdf(path: Path, *, reindex: bool) -> Path:
         )
 
     document_dir = Path(settings.storage_parsed).resolve() / path.stem
+    temp_dir = Path(settings.ocr_temp_dir).resolve()
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    free_bytes = shutil.disk_usage(temp_dir).free
+    required_bytes = settings.ocr_min_temp_free_mb * 1024 * 1024
+    if free_bytes < required_bytes:
+        raise OcrPreprocessError(
+            "Insufficient OCR temporary storage: "
+            f"{free_bytes // (1024 * 1024)} MiB available, "
+            f"{settings.ocr_min_temp_free_mb} MiB required"
+        )
     output_dir = document_dir / "ocrmypdf"
     output_path = output_dir / f"{path.stem}.ocr.pdf"
     partial_path = output_dir / f"{path.stem}.ocr.partial.pdf"
@@ -105,6 +116,8 @@ def preprocess_pdf(path: Path, *, reindex: bool) -> Path:
         str(partial_path),
     ]
     started = time.perf_counter()
+    environment = os.environ.copy()
+    environment["TMPDIR"] = str(temp_dir)
     try:
         result = subprocess.run(
             command,
@@ -112,6 +125,7 @@ def preprocess_pdf(path: Path, *, reindex: bool) -> Path:
             text=True,
             check=False,
             timeout=settings.ocr_timeout_seconds,
+            env=environment,
         )
     except subprocess.TimeoutExpired as exc:
         partial_path.unlink(missing_ok=True)
@@ -129,6 +143,7 @@ def preprocess_pdf(path: Path, *, reindex: bool) -> Path:
             "duration_s": duration_s,
             "languages": settings.ocr_languages,
             "jobs": settings.ocr_jobs,
+            "temp_dir": str(temp_dir),
             "stderr_tail": stderr[-2000:],
         },
     )

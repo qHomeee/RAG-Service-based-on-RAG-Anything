@@ -335,6 +335,8 @@ class Settings(BaseSettings):
     ocr_timeout_seconds: int = 7200
     ocr_sample_pages: int = 12
     ocr_min_chars_per_sample_page: int = 80
+    ocr_temp_dir: str = "storage/parsed/.ocr-tmp"
+    ocr_min_temp_free_mb: int = 4096
 
     ingest_path_must_be_under_storage_raw: bool = True
     rate_limit_per_minute: int = 120

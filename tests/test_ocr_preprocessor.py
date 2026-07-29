@@ -45,12 +45,15 @@ def test_preprocess_pdf_builds_russian_cpu_command_and_reuses_cache(tmp_path, mo
     monkeypatch.setattr(settings, "ocr_languages", "rus+eng")
     monkeypatch.setattr(settings, "ocr_jobs", 4)
     monkeypatch.setattr(settings, "ocr_timeout_seconds", 7200)
+    monkeypatch.setattr(settings, "ocr_temp_dir", str(parsed / ".ocr-tmp"))
+    monkeypatch.setattr(settings, "ocr_min_temp_free_mb", 1)
     monkeypatch.setattr("app.ocr_preprocessor.shutil.which", lambda _binary: "/usr/bin/ocrmypdf")
 
-    def fake_run(command, *, capture_output, text, check, timeout):
+    def fake_run(command, *, capture_output, text, check, timeout, env):
         calls.append(command)
         Path(command[-1]).write_bytes(b"%PDF-1.7 OCR")
         assert timeout == 7200
+        assert env["TMPDIR"] == str((parsed / ".ocr-tmp").resolve())
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("app.ocr_preprocessor.subprocess.run", fake_run)
